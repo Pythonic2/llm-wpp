@@ -36,7 +36,7 @@ ROOT_URLCONF = "gesttech.urls"
 TEMPLATES = [{"BACKEND": "django.template.backends.django.DjangoTemplates", "DIRS": [], "APP_DIRS": True,
               "OPTIONS": {"context_processors": ["django.template.context_processors.request", "django.contrib.auth.context_processors.auth", "django.contrib.messages.context_processors.messages"]}}]
 WSGI_APPLICATION = "gesttech.wsgi.application"
-DATABASES = {"default": dj_database_url.config(default="postgresql://gesttech:gesttech@localhost:5432/gesttech", conn_max_age=60)}
+DATABASES = {"default": dj_database_url.config(default="postgresql://gesttech:gesttech@192.168.0.7:5432/gesttech", conn_max_age=60)}
 AUTH_PASSWORD_VALIDATORS = []
 LANGUAGE_CODE = "pt-br"
 TIME_ZONE = "America/Sao_Paulo"
