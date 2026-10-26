@@ -37,6 +37,7 @@ services:
       DATABASE_URL: postgresql://gesttech:gesttech@db:5432/gesttech
       CELERY_BROKER_URL: redis://redis:6379/0
       FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:-http://localhost:5173}
+      CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-http://localhost:5173,http://localhost:8123}
     ports:
       - "8123:8123"
     volumes:

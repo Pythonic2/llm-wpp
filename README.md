@@ -74,4 +74,4 @@ Fora do escopo: cobrança e CRM completo. Consulte [API.md](./API.md) para os co
 
 Use **Repository**, branch `main` e o caminho `docker-compose.yml`. Esse arquivo sobe backend, worker, PostgreSQL e Redis sem depender da pasta local `../frontend-llm-wpp`.
 
-Antes do deploy, crie a rede externa `pi_default` no servidor e cadastre no Portainer, no mínimo, `POSTGRES_PASSWORD`, `DJANGO_SECRET_KEY` e `DJANGO_ALLOWED_HOSTS`. Cadastre também as credenciais Gemini e WhatsApp como variáveis da stack; nunca coloque valores reais no repositório.
+Antes do deploy, crie a rede externa `pi_default` no servidor e cadastre no Portainer, no mínimo, `POSTGRES_PASSWORD`, `DJANGO_SECRET_KEY`, `DJANGO_ALLOWED_HOSTS` e `CSRF_TRUSTED_ORIGINS`. Para o domínio de produção, use por exemplo `DJANGO_ALLOWED_HOSTS=llm-wpp.gestcloud.com.br` e `CSRF_TRUSTED_ORIGINS=https://llm-wpp.gestcloud.com.br`. Cadastre também as credenciais Gemini e WhatsApp como variáveis da stack; nunca coloque valores reais no repositório.
