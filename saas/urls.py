@@ -1,0 +1,120 @@
+from django.urls import path
+from .api import (
+    CompanyDetailView,
+    CompanyListView,
+    ContactConversationsView,
+    ContactDetailView,
+    ContactListView,
+    ConversationActionView,
+    ConversationDetailView,
+    ConversationListView,
+    ConversationMessagesView,
+    CsrfCookieView,
+    DashboardView,
+    KnowledgeBaseDetailView,
+    KnowledgeBaseListView,
+    KnowledgeDocumentDetailView,
+    KnowledgeDocumentListView,
+    KnowledgeDocumentReprocessView,
+    LoginView,
+    LogoutView,
+    MeView,
+    MembershipDetailView,
+    MembershipListCreateView,
+    RefreshView,
+    WhatsAppNumberDetailView,
+    WhatsAppNumberListView,
+)
+from .webhooks import whatsapp_webhook
+
+urlpatterns = [
+    path("webhooks/whatsapp/", whatsapp_webhook, name="whatsapp-webhook"),
+    path("v1/auth/csrf/", CsrfCookieView.as_view(), name="api-csrf"),
+    path("v1/auth/login/", LoginView.as_view(), name="api-login"),
+    path("v1/auth/logout/", LogoutView.as_view(), name="api-logout"),
+    path("v1/auth/refresh/", RefreshView.as_view(), name="api-refresh"),
+    path("v1/auth/me/", MeView.as_view(), name="api-me"),
+    path("v1/companies/", CompanyListView.as_view(), name="api-companies"),
+    path("v1/companies/<uuid:company_id>/", CompanyDetailView.as_view(), name="api-company"),
+    path(
+        "v1/companies/<uuid:company_id>/members/",
+        MembershipListCreateView.as_view(),
+        name="api-company-members",
+    ),
+    path(
+        "v1/companies/<uuid:company_id>/members/<int:membership_id>/",
+        MembershipDetailView.as_view(),
+        name="api-company-member",
+    ),
+    path(
+        "v1/companies/<uuid:company_id>/dashboard/",
+        DashboardView.as_view(),
+        name="api-company-dashboard",
+    ),
+    path(
+        "v1/companies/<uuid:company_id>/whatsapp-numbers/",
+        WhatsAppNumberListView.as_view(),
+        name="api-whatsapp-numbers",
+    ),
+    path(
+        "v1/companies/<uuid:company_id>/whatsapp-numbers/<int:object_id>/",
+        WhatsAppNumberDetailView.as_view(),
+        name="api-whatsapp-number",
+    ),
+    path("v1/companies/<uuid:company_id>/contacts/", ContactListView.as_view(), name="api-contacts"),
+    path(
+        "v1/companies/<uuid:company_id>/contacts/<int:object_id>/",
+        ContactDetailView.as_view(),
+        name="api-contact",
+    ),
+    path(
+        "v1/companies/<uuid:company_id>/contacts/<int:contact_id>/conversations/",
+        ContactConversationsView.as_view(),
+        name="api-contact-conversations",
+    ),
+    path(
+        "v1/companies/<uuid:company_id>/conversations/",
+        ConversationListView.as_view(),
+        name="api-conversations",
+    ),
+    path(
+        "v1/companies/<uuid:company_id>/conversations/<int:object_id>/",
+        ConversationDetailView.as_view(),
+        name="api-conversation",
+    ),
+    path(
+        "v1/companies/<uuid:company_id>/conversations/<int:conversation_id>/messages/",
+        ConversationMessagesView.as_view(),
+        name="api-conversation-messages",
+    ),
+    path(
+        "v1/companies/<uuid:company_id>/conversations/<int:conversation_id>/<str:action>/",
+        ConversationActionView.as_view(),
+        name="api-conversation-action",
+    ),
+    path(
+        "v1/companies/<uuid:company_id>/knowledge-bases/",
+        KnowledgeBaseListView.as_view(),
+        name="api-knowledge-bases",
+    ),
+    path(
+        "v1/companies/<uuid:company_id>/knowledge-bases/<int:object_id>/",
+        KnowledgeBaseDetailView.as_view(),
+        name="api-knowledge-base",
+    ),
+    path(
+        "v1/companies/<uuid:company_id>/knowledge-bases/<int:base_id>/documents/",
+        KnowledgeDocumentListView.as_view(),
+        name="api-knowledge-documents",
+    ),
+    path(
+        "v1/companies/<uuid:company_id>/knowledge-bases/<int:base_id>/documents/<int:document_id>/",
+        KnowledgeDocumentDetailView.as_view(),
+        name="api-knowledge-document",
+    ),
+    path(
+        "v1/companies/<uuid:company_id>/knowledge-bases/<int:base_id>/documents/<int:document_id>/reprocess/",
+        KnowledgeDocumentReprocessView.as_view(),
+        name="api-knowledge-document-reprocess",
+    ),
+]

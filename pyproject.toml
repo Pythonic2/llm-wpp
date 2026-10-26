@@ -1,0 +1,30 @@
+[project]
+name = "llm-wpp"
+version = "0.1.0"
+description = "Backend multiempresa da Gest Tech para atendimento via WhatsApp com RAG"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "celery[redis]>=5.4,<6",
+    "dj-database-url>=2.2,<3",
+    "django>=5.1,<6",
+    "djangorestframework>=3.15,<4",
+    "google-genai>=1.0,<2",
+    "gunicorn>=23,<24",
+    "httpx>=0.28.1",
+    "pgvector>=0.3,<1",
+    "psycopg[binary]>=3.2,<4",
+    "pymupdf>=1.25,<2",
+    "python-dotenv>=1.0,<2",
+    "whitenoise>=6.8,<7",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3,<9",
+    "pytest-django>=4.9,<5",
+]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "gesttech.settings"
+python_files = ["test_*.py"]

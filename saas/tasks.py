@@ -1,0 +1,139 @@
+from celery import shared_task
+from django.db import transaction
+from redis.exceptions import LockError
+
+from .models import Conversation, KnowledgeChunk, KnowledgeDocument, Message
+from .services import (
+    answer_with_rag,
+    conversation_ai_lock,
+    embed_texts,
+    extract_text,
+    send_whatsapp_text,
+    split_text,
+)
+
+
+@shared_task(autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
+def process_document(document_id):
+    document = KnowledgeDocument.objects.select_related("knowledge_base").get(pk=document_id)
+    document.status, document.error = KnowledgeDocument.Status.PROCESSING, ""
+    document.save(update_fields=["status", "error"])
+    try:
+        chunks = split_text(extract_text(document))
+        if not chunks: raise ValueError("Documento vazio")
+        vectors = embed_texts(chunks)
+        with transaction.atomic():
+            document.chunks.all().delete()
+            KnowledgeChunk.objects.bulk_create([KnowledgeChunk(company_id=document.company_id, knowledge_base_id=document.knowledge_base_id, document=document, position=i, content=text, embedding=vector) for i, (text, vector) in enumerate(zip(chunks, vectors, strict=True))])
+            document.status = KnowledgeDocument.Status.READY
+            document.save(update_fields=["status"])
+    except Exception as exc:
+        document.status, document.error = KnowledgeDocument.Status.FAILED, str(exc)[:2000]
+        document.save(update_fields=["status", "error"])
+        raise
+
+
+@shared_task(bind=True, max_retries=120)
+def answer_inbound_message(self, message_id):
+    incoming = Message.objects.select_related("conversation__whatsapp_number", "conversation__contact").get(pk=message_id)
+    lock = conversation_ai_lock(incoming.company_id, incoming.conversation_id)
+    if not lock.acquire(blocking=False):
+        raise self.retry(countdown=2)
+
+    try:
+        incoming = Message.objects.select_related("conversation__whatsapp_number", "conversation__contact").get(pk=message_id)
+        if incoming.ai_status in {Message.AIStatus.COMPLETED, Message.AIStatus.SKIPPED, Message.AIStatus.FAILED}:
+            return
+
+        first_waiting = (
+            Message.objects.filter(
+                conversation_id=incoming.conversation_id,
+                direction=Message.Direction.INBOUND,
+                ai_status__in=[Message.AIStatus.QUEUED, Message.AIStatus.PROCESSING],
+            )
+            .order_by("created_at", "pk")
+            .values_list("pk", flat=True)
+            .first()
+        )
+        if first_waiting != incoming.pk:
+            raise self.retry(countdown=2)
+
+        conversation, number = incoming.conversation, incoming.conversation.whatsapp_number
+        if conversation.ai_paused or not number.ai_enabled or not number.is_active or incoming.message_type != "text":
+            incoming.ai_status = Message.AIStatus.SKIPPED
+            incoming.save(update_fields=["ai_status"])
+            return
+
+        existing_response = Message.objects.filter(response_to=incoming).first()
+        if existing_response:
+            incoming.ai_status = Message.AIStatus.COMPLETED if existing_response.status == Message.Status.SENT else Message.AIStatus.FAILED
+            incoming.ai_error = "Resposta já reservada; reenvio automático bloqueado para evitar duplicidade."
+            incoming.save(update_fields=["ai_status", "ai_error"])
+            return
+
+        incoming.ai_status, incoming.ai_error = Message.AIStatus.PROCESSING, ""
+        incoming.save(update_fields=["ai_status", "ai_error"])
+        try:
+            answer = answer_with_rag(incoming.company_id, incoming.text)
+        except Exception as exc:
+            incoming.ai_error = str(exc)[:2000]
+            if self.request.retries >= self.max_retries:
+                incoming.ai_status = Message.AIStatus.FAILED
+                incoming.save(update_fields=["ai_status", "ai_error"])
+                raise
+            incoming.save(update_fields=["ai_error"])
+            raise self.retry(exc=exc, countdown=min(2 ** self.request.retries, 30))
+
+        with transaction.atomic():
+            incoming = Message.objects.select_for_update().get(pk=incoming.pk)
+            conversation = Conversation.objects.select_for_update().select_related("whatsapp_number").get(
+                pk=incoming.conversation_id
+            )
+            if (
+                conversation.ai_paused
+                or not conversation.whatsapp_number.ai_enabled
+                or not conversation.whatsapp_number.is_active
+            ):
+                incoming.ai_status = Message.AIStatus.SKIPPED
+                incoming.ai_error = ""
+                incoming.save(update_fields=["ai_status", "ai_error"])
+                return
+            outgoing, created = Message.objects.get_or_create(
+                response_to=incoming,
+                defaults={
+                    "external_id": f"ai-pending:{incoming.pk}",
+                    "company_id": incoming.company_id,
+                    "conversation_id": incoming.conversation_id,
+                    "direction": Message.Direction.OUTBOUND,
+                    "message_type": "text",
+                    "text": answer,
+                    "status": Message.Status.PENDING,
+                },
+            )
+        if not created:
+            incoming.ai_status = Message.AIStatus.FAILED
+            incoming.ai_error = "Resposta já reservada; envio duplicado bloqueado."
+            incoming.save(update_fields=["ai_status", "ai_error"])
+            return
+
+        try:
+            external_id = send_whatsapp_text(number, conversation.contact.wa_id, answer)
+        except Exception as exc:
+            outgoing.status = Message.Status.FAILED
+            outgoing.raw_payload = {"error": str(exc)[:2000]}
+            outgoing.save(update_fields=["status", "raw_payload"])
+            incoming.ai_status, incoming.ai_error = Message.AIStatus.FAILED, str(exc)[:2000]
+            incoming.save(update_fields=["ai_status", "ai_error"])
+            raise
+
+        outgoing.external_id, outgoing.status = external_id, Message.Status.SENT
+        outgoing.save(update_fields=["external_id", "status"])
+        conversation.last_message_at = outgoing.created_at
+        conversation.save(update_fields=["last_message_at"])
+        incoming.ai_status, incoming.ai_error = Message.AIStatus.COMPLETED, ""
+        incoming.save(update_fields=["ai_status", "ai_error"])
+    finally:
+        try:
+            lock.release()
+        except LockError:
+            pass

@@ -1,0 +1,73 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: gesttech
+      POSTGRES_USER: gesttech
+      POSTGRES_PASSWORD: gesttech
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gesttech"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - pi_default
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - pi_default
+  backend:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://gesttech:gesttech@db:5432/gesttech
+      CELERY_BROKER_URL: redis://redis:6379/0
+      FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:-http://localhost:5173}
+    ports: ["8123:8123"]
+    volumes: [media_data:/app/media]
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    networks:
+      - pi_default
+  worker:
+    build: .
+    command: .venv/bin/celery -A gesttech worker -l info
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://gesttech:gesttech@db:5432/gesttech
+      CELERY_BROKER_URL: redis://redis:6379/0
+    volumes: [media_data:/app/media]
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    networks:
+      - pi_default
+  frontend:
+    build:
+      context: ../frontend-llm-wpp
+    environment:
+      VITE_API_BASE_URL: http://localhost:8123/api/v1
+    ports: ["5173:5173"]
+    volumes:
+      - ../frontend-llm-wpp:/app
+      - frontend_node_modules:/app/node_modules
+    depends_on:
+      backend: {condition: service_started}
+    networks:
+      - pi_default
+volumes:
+  postgres_data:
+  media_data:
+  frontend_node_modules:
+networks:
+  pi_default:
+    external: true

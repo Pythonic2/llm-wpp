@@ -1,0 +1,65 @@
+# Base de Conhecimento — Igor Marinho
+
+Meu nome é Igor Marinho, sou desenvolvedor de software especializado em Python, engenharia backend, desenvolvimento de APIs REST, automação de processos e aplicações web. Resido em João Pessoa, Paraíba, Brasil, e possuo mais de cinco anos de experiência profissional com desenvolvimento de software, automação e soluções corporativas.
+
+Atuo principalmente no desenvolvimento de sistemas backend utilizando Python, Django, Django REST Framework, FastAPI e Flask. Tenho experiência na construção de APIs REST, integrações entre sistemas, processamento de dados, automações RPA, web scraping e desenvolvimento de aplicações web para ambientes corporativos.
+
+Minha experiência envolve arquitetura de software, organização de regras de negócio, integração entre frontend e backend, desenvolvimento de endpoints, validação de dados, tratamento de erros, execução assíncrona, concorrência e paralelismo. Trabalho com recursos como asyncio, async/await e multiprocessing, buscando melhorar o desempenho, a confiabilidade e a escalabilidade das aplicações.
+
+Também possuo conhecimentos em desenvolvimento frontend, utilizando React, JavaScript, HTML, CSS e jQuery, com experiência na integração de interfaces web a serviços backend construídos em Python.
+
+Tenho experiência com bancos de dados relacionais e não relacionais, incluindo PostgreSQL, Microsoft SQL Server, MySQL e MongoDB. Trabalho com consultas SQL, integração de dados, processamento de grandes volumes de informações e otimização de operações.
+
+Na área de infraestrutura e DevOps, utilizo Docker para conteinerização de aplicações, Portainer para gerenciamento de containers, Cloudflare para exposição e proteção de serviços, Grafana e Zabbix para monitoramento e observabilidade. Possuo conhecimentos em Google Cloud Platform, incluindo implantação de aplicações no Cloud Run, além de conceitos e serviços da AWS.
+
+Minha trajetória profissional inclui experiências nas empresas Capgemini, DD8, Eco Comunicações e SENAI da Paraíba.
+
+Na Capgemini, onde atuo desde novembro de 2021, desempenho atividades relacionadas ao desenvolvimento de software, engenharia backend, automações, APIs, engenharia de dados e qualidade de software.
+
+Durante minha atuação na Capgemini, desenvolvi e mantive aplicações backend utilizando Python, Django, Django REST Framework, Flask e FastAPI. Participei da construção de APIs REST para integração entre aplicações corporativas, exposição de informações e suporte a processos de negócio.
+
+Também trabalhei com modernização de aplicações Django, separação de responsabilidades entre componentes, organização de regras de negócio e integração entre serviços backend e interfaces frontend.
+
+Uma parte significativa da minha experiência envolve desenvolvimento, manutenção e otimização de automações RPA. Utilizei Python, Selenium e outras tecnologias para automatizar tarefas repetitivas, navegar em sistemas web, coletar informações e integrar diferentes plataformas.
+
+Um dos resultados importantes dessa atuação foi a otimização de uma automação que anteriormente levava aproximadamente 60 minutos para executar e passou a concluir o processamento em cerca de 20 minutos. Essa melhoria representou uma redução aproximada de 67% no tempo de execução por ciclo, obtida por meio de refatoração e otimização do processo.
+
+Também trabalhei com estratégias de concorrência, I/O assíncrono e paralelismo para melhorar o desempenho e a capacidade de processamento de automações e serviços Python.
+
+Em projetos voltados ao setor bancário, desenvolvi APIs utilizando Python e Flask, além de trabalhar com engenharia de dados em ambientes de Big Data. Utilizei Apache Spark e Apache Hive para processamento e manipulação de informações, além de participar da sustentação de aplicações em ambientes de cloud privada.
+
+Nesses ambientes, utilizei também Streamlit e Matplotlib para desenvolvimento de ferramentas de visualização e análise de dados.
+
+Durante minha trajetória na Capgemini, também atuei como analista de qualidade de software, realizando testes funcionais, testes de regressão, testes exploratórios e automação de testes. Utilizei ferramentas como Selenium, Python, Java, pytest, Jira, Postman, Insomnia e Swagger para validação de aplicações e APIs.
+
+Na área de infraestrutura, participei da implementação e manutenção de ambientes conteinerizados com Docker, Portainer, Cloudflare, Grafana e Zabbix, utilizando monitoramento, logs e ferramentas de observabilidade para acompanhar o funcionamento das aplicações.
+
+Além da Capgemini, trabalhei como desenvolvedor Python RPA na DD8, no período de setembro a dezembro de 2025, em regime de prestação de serviços.
+
+Na DD8, fui responsável pelo desenvolvimento de automações voltadas ao setor jurídico, especialmente para consulta de processos judiciais e obtenção de certidões em plataformas brasileiras, incluindo Projudi e e-SAJ.
+
+Utilizei Python e Playwright para automatizar a navegação nessas plataformas, realizar consultas, coletar informações e executar procedimentos repetitivos.
+
+Também desenvolvi serviços utilizando FastAPI para gerenciamento, execução e disponibilização dos resultados das automações. Essa arquitetura permitia integrar os robôs a aplicações e outros serviços por meio de endpoints HTTP.
+
+O trabalho envolveu tratamento de erros, validação de respostas, gerenciamento de execuções e implementação de mecanismos para tornar os processos automatizados mais estáveis e confiáveis.
+
+Anteriormente, trabalhei como desenvolvedor freelancer para a Eco Comunicações, entre abril de 2018 e abril de 2019, com outra atuação em julho de 2021.
+
+Nesse período, desenvolvi aplicações web, blogs e sites utilizando Python e Django. Também criei automações de navegador com Python e Selenium, especialmente para automatização de processos relacionados a redes sociais.
+
+Minha experiência profissional com desenvolvimento web começou ainda antes, quando atuei como freelancer para o SENAI da Paraíba, entre agosto de 2016 e setembro de 2017.
+
+No SENAI, participei do desenvolvimento de funcionalidades frontend para plataformas online de aprendizagem, utilizando HTML, CSS e jQuery.
+
+Em relação à formação acadêmica, cursei Análise e Desenvolvimento de Sistemas na UNIESP, chegando ao terceiro período, com matrícula trancada em 2022. Também cursei Análise e Desenvolvimento de Sistemas na Universidade Maurício de Nassau, até o terceiro período, com matrícula trancada em 2016.
+
+Minhas principais competências técnicas incluem Python, Django, Django REST Framework, FastAPI, Flask, desenvolvimento de APIs REST, arquitetura backend, integração de sistemas, automação RPA, Selenium, Playwright, web scraping, asyncio, async/await, concorrência, paralelismo, multiprocessing, PostgreSQL, SQL Server, MySQL, MongoDB, React, JavaScript, HTML, CSS, jQuery, Docker, Portainer, Cloudflare, Google Cloud Platform, Cloud Run, AWS, Grafana, Zabbix, Apache Spark, Apache Hive, Streamlit, Matplotlib, pytest e automação de testes.
+
+Meu perfil profissional é voltado à engenharia de software com foco em Python, desenvolvimento backend, automações, integração de sistemas, arquitetura sustentável e melhoria contínua de desempenho. Tenho experiência com aplicações corporativas de diferentes portes, processamento de dados, soluções web e infraestrutura de aplicações.
+
+Busco desenvolver soluções tecnológicas eficientes, organizadas, escaláveis e de fácil manutenção, utilizando ferramentas adequadas para resolver problemas de negócio, reduzir atividades manuais e melhorar a produtividade das organizações.
+
+Atualmente, meu foco profissional está em desenvolvimento Python backend, APIs, automações, integrações, arquitetura de software e soluções baseadas em inteligência artificial, mantendo interesse em oportunidades remotas e projetos internacionais.
+
+Para contato profissional, meu e-mail é igormarinhosilva@gmail.com e meu telefone é +55 83 99841-3751.
