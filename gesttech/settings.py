@@ -12,11 +12,7 @@ DEBUG = os.getenv("DJANGO_DEBUG", "false").lower() == "true"
 ALLOWED_HOSTS = [x.strip() for x in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if x.strip()]
 FRONTEND_ORIGINS = [x.strip() for x in os.getenv("FRONTEND_ORIGINS", "").split(",") if x.strip()]
 CORS_ALLOWED_ORIGINS = FRONTEND_ORIGINS
-CSRF_TRUSTED_ORIGINS = [
-    x.strip()
-    for x in os.getenv("CSRF_TRUSTED_ORIGINS", "").split(",")
-    if x.strip()
-]
+CSRF_TRUSTED_ORIGINS = ['https://llm-wpp.gestcloud.com.br']
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 INSTALLED_APPS = [
