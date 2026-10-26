@@ -69,3 +69,9 @@ Eles cobrem assinatura/verificação do webhook, idempotência, isolamento do Ad
 O fluxo ponta a ponta precisa de Gemini API Key; app Meta/WhatsApp com número de testes, token e App Secret; callback HTTPS; e destinatário autorizado na Meta. Sem isso, banco, Admin e testes mockados continuam utilizáveis.
 
 Fora do escopo: cobrança e CRM completo. Consulte [API.md](./API.md) para os contratos administrativos e o [frontend independente](../frontend-llm-wpp/README.md) para execução e validação da interface.
+
+## Implantar pelo Portainer
+
+Use **Repository**, branch `main` e o caminho `docker-compose.yml`. Esse arquivo sobe backend, worker, PostgreSQL e Redis sem depender da pasta local `../frontend-llm-wpp`.
+
+Antes do deploy, crie a rede externa `pi_default` no servidor e cadastre no Portainer, no mínimo, `POSTGRES_PASSWORD`, `DJANGO_SECRET_KEY` e `DJANGO_ALLOWED_HOSTS`. Cadastre também as credenciais Gemini e WhatsApp como variáveis da stack; nunca coloque valores reais no repositório.
