@@ -1,5 +1,7 @@
 import csv
 import io
+import re
+import unicodedata
 from pathlib import Path
 
 import pymupdf
@@ -72,7 +74,31 @@ def retrieve_context(company_id, question, knowledge_base_id=None, limit=6):
     return list(queryset.annotate(distance=CosineDistance("embedding", vector)).order_by("distance")[:limit])
 
 
+def greeting_response(question):
+    normalized = unicodedata.normalize("NFKD", str(question).lower())
+    normalized = "".join(character for character in normalized if not unicodedata.combining(character))
+    normalized = re.sub(r"[^a-z0-9]+", " ", normalized).strip()
+    greetings = {
+        "oi",
+        "ola",
+        "opa",
+        "e ai",
+        "bom dia",
+        "boa tarde",
+        "boa noite",
+        "oi tudo bem",
+        "ola tudo bem",
+        "tudo bem",
+        "como vai",
+    }
+    if normalized in greetings:
+        return "Olá! Tudo bem? Como posso ajudar você hoje?"
+    return None
+
+
 def answer_with_rag(company_id, question):
+    if greeting := greeting_response(question):
+        return greeting
     chunks = retrieve_context(company_id, question)
     context = "\n\n".join(chunk.content for chunk in chunks)
     prompt = f"""Responda em português do Brasil, de forma objetiva, usando exclusivamente o CONTEXTO.
@@ -85,12 +111,32 @@ CONTEXTO:\n{context}\n\nPERGUNTA:\n{question}"""
     return (response.text or "").strip()
 
 
+def _brazilian_mobile_with_ninth_digit(recipient):
+    digits = "".join(character for character in str(recipient) if character.isdigit())
+    if len(digits) == 12 and digits.startswith("55") and digits[4] in "6789":
+        return f"{digits[:4]}9{digits[4:]}"
+    return digits
+
+
 def send_whatsapp_text(number, recipient, text):
-    response = httpx.post(
-        f"https://graph.facebook.com/{settings.WHATSAPP_API_VERSION}/{number.phone_number_id}/messages",
-        headers={"Authorization": f"Bearer {settings.WHATSAPP_ACCESS_TOKEN}"},
-        json={"messaging_product": "whatsapp", "to": recipient, "type": "text", "text": {"body": text}},
-        timeout=20,
-    )
+    url = f"https://graph.facebook.com/{settings.WHATSAPP_API_VERSION}/{number.phone_number_id}/messages"
+    headers = {"Authorization": f"Bearer {settings.WHATSAPP_ACCESS_TOKEN}"}
+
+    def post_message(destination):
+        return httpx.post(
+            url,
+            headers=headers,
+            json={"messaging_product": "whatsapp", "to": destination, "type": "text", "text": {"body": text}},
+            timeout=20,
+        )
+
+    response = post_message(recipient)
+    try:
+        error_code = response.json().get("error", {}).get("code") if response.status_code == 400 else None
+    except (TypeError, ValueError):
+        error_code = None
+    normalized_recipient = _brazilian_mobile_with_ninth_digit(recipient)
+    if error_code == 131030 and normalized_recipient != str(recipient):
+        response = post_message(normalized_recipient)
     response.raise_for_status()
     return response.json()["messages"][0]["id"]
