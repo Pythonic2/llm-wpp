@@ -77,7 +77,8 @@ def test_conversation_assignment_rejects_user_from_another_company(tenant_data):
     assert not tenant_data["conversation"].assigned_to
 
 
-def test_manual_message_sends_once_and_pauses_ai(tenant_data):
+@patch("saas.api.analyze_conversation.delay")
+def test_manual_message_sends_once_and_pauses_ai(analyze, tenant_data):
     client = api_client(tenant_data["user"])
     path = company_url(
         tenant_data["company"].pk,
@@ -108,9 +109,11 @@ def test_manual_message_sends_once_and_pauses_ai(tenant_data):
     tenant_data["conversation"].refresh_from_db()
     assert tenant_data["conversation"].ai_paused
     send.assert_called_once()
+    analyze.assert_called_once_with(tenant_data["conversation"].pk)
 
 
-def test_manual_message_generates_idempotency_key_when_header_is_missing(tenant_data):
+@patch("saas.api.analyze_conversation.delay")
+def test_manual_message_generates_idempotency_key_when_header_is_missing(analyze, tenant_data):
     with patch("saas.api.conversation_ai_lock") as lock_factory, patch(
         "saas.api.send_whatsapp_text", return_value="wamid.with-server-key"
     ):
@@ -127,6 +130,7 @@ def test_manual_message_generates_idempotency_key_when_header_is_missing(tenant_
     assert response.status_code == 201
     message = Message.objects.get(external_id="wamid.with-server-key")
     assert message.idempotency_key.startswith("server:")
+    analyze.assert_called_once_with(tenant_data["conversation"].pk)
 
 
 def test_manual_message_failure_is_persisted(tenant_data):

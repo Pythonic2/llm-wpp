@@ -9,7 +9,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 from .models import Contact, Conversation, Message, WhatsAppNumber
-from .tasks import answer_inbound_message
+from .tasks import analyze_conversation, answer_inbound_message
 
 
 def _valid_signature(request):
@@ -48,4 +48,5 @@ def whatsapp_webhook(request):
                         conversation.last_message_at = timezone.now()
                         conversation.save(update_fields=["last_message_at"])
                         transaction.on_commit(lambda pk=message.pk: answer_inbound_message.delay(pk))
+                        transaction.on_commit(lambda pk=conversation.pk: analyze_conversation.delay(pk))
     return JsonResponse({"status": "ok"})

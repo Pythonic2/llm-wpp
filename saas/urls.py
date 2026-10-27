@@ -11,6 +11,7 @@ from .api import (
     ConversationMessagesView,
     CsrfCookieView,
     DashboardView,
+    FollowUpListView,
     KnowledgeBaseDetailView,
     KnowledgeBaseListView,
     KnowledgeDocumentDetailView,
@@ -50,6 +51,11 @@ urlpatterns = [
         "v1/companies/<uuid:company_id>/dashboard/",
         DashboardView.as_view(),
         name="api-company-dashboard",
+    ),
+    path(
+        "v1/companies/<uuid:company_id>/follow-ups/",
+        FollowUpListView.as_view(),
+        name="api-company-follow-ups",
     ),
     path(
         "v1/companies/<uuid:company_id>/whatsapp-numbers/",

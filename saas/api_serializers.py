@@ -95,6 +95,16 @@ class ConversationSerializer(serializers.ModelSerializer):
             "status",
             "lead_stage",
             "lead_data",
+            "lead_temperature",
+            "purchase_intent_score",
+            "analysis_summary",
+            "buying_signals",
+            "objections",
+            "recommended_action",
+            "analyzed_at",
+            "opportunity_status",
+            "next_follow_up_at",
+            "follow_up_completed_at",
             "ai_paused",
             "ai_paused_at",
             "assigned_to",
@@ -102,7 +112,12 @@ class ConversationSerializer(serializers.ModelSerializer):
             "last_message_at",
             "created_at",
         )
-        read_only_fields = ("id", "contact", "whatsapp_number", "ai_paused_at", "last_message_at", "created_at")
+        read_only_fields = (
+            "id", "contact", "whatsapp_number", "lead_temperature", "purchase_intent_score",
+            "analysis_summary", "buying_signals", "objections", "recommended_action", "analyzed_at",
+            "opportunity_status", "next_follow_up_at", "follow_up_completed_at", "ai_paused_at",
+            "last_message_at", "created_at",
+        )
 
 
 class MessageSerializer(serializers.ModelSerializer):

@@ -1,16 +1,48 @@
 from celery import shared_task
 from django.db import transaction
+from django.utils import timezone
+from datetime import timedelta
 from redis.exceptions import LockError
 
 from .models import Conversation, KnowledgeChunk, KnowledgeDocument, Message
 from .services import (
     answer_with_rag,
+    analyze_sales_conversation,
     conversation_ai_lock,
     embed_texts,
     extract_text,
     send_whatsapp_text,
     split_text,
 )
+
+
+@shared_task(autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
+def analyze_conversation(conversation_id):
+    analysis = analyze_sales_conversation(conversation_id)
+    with transaction.atomic():
+        conversation = Conversation.objects.select_for_update().get(pk=conversation_id)
+        conversation.lead_temperature = analysis["temperature"]
+        conversation.purchase_intent_score = analysis["score"]
+        conversation.analysis_summary = analysis["summary"]
+        conversation.buying_signals = analysis["buying_signals"]
+        conversation.objections = analysis["objections"]
+        conversation.recommended_action = analysis["recommended_action"]
+        conversation.analyzed_at = timezone.now()
+        if conversation.opportunity_status == Conversation.OpportunityStatus.OPEN:
+            delays = {
+                Conversation.LeadTemperature.HOT: timedelta(days=1),
+                Conversation.LeadTemperature.WARM: timedelta(days=3),
+            }
+            delay = delays.get(conversation.lead_temperature)
+            conversation.next_follow_up_at = (conversation.last_message_at or timezone.now()) + delay if delay else None
+            conversation.follow_up_completed_at = None
+        conversation.save(
+            update_fields=[
+                "lead_temperature", "purchase_intent_score", "analysis_summary", "buying_signals",
+                "objections", "recommended_action", "analyzed_at", "next_follow_up_at",
+                "follow_up_completed_at",
+            ]
+        )
 
 
 @shared_task(autoretry_for=(Exception,), retry_backoff=True, max_retries=3)

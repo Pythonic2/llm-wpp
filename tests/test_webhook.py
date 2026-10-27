@@ -19,8 +19,9 @@ def test_webhook_rejects_bad_signature(client, settings):
     settings.WHATSAPP_APP_SECRET = "secret"
     assert client.post(reverse("whatsapp-webhook"), data=b"{}", content_type="application/json", HTTP_X_HUB_SIGNATURE_256="bad").status_code == 403
 
+@patch("saas.webhooks.analyze_conversation.delay")
 @patch("saas.webhooks.answer_inbound_message.delay")
-def test_webhook_is_idempotent(delay, client, settings, tenant_data, django_capture_on_commit_callbacks):
+def test_webhook_is_idempotent(delay, analyze, client, settings, tenant_data, django_capture_on_commit_callbacks):
     settings.WHATSAPP_APP_SECRET = "secret"
     body = json.dumps(payload()).encode()
     headers = {"HTTP_X_HUB_SIGNATURE_256": signature("secret", body)}
@@ -29,3 +30,4 @@ def test_webhook_is_idempotent(delay, client, settings, tenant_data, django_capt
         assert client.post(reverse("whatsapp-webhook"), data=body, content_type="application/json", **headers).status_code == 200
     assert Message.objects.filter(external_id="wamid.123").count() == 1
     delay.assert_called_once()
+    analyze.assert_called_once()

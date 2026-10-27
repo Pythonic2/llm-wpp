@@ -1,5 +1,6 @@
 import uuid
 import logging
+from datetime import timedelta
 
 from django.contrib.auth import authenticate, get_user_model, login, logout
 from django.conf import settings
@@ -40,7 +41,7 @@ from .models import (
     WhatsAppNumber,
 )
 from .services import conversation_ai_lock, send_whatsapp_text
-from .tasks import process_document
+from .tasks import analyze_conversation, process_document
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -269,6 +270,11 @@ class DashboardView(APIView):
         messages = Message.objects.filter(company=company)
         recent = conversations.select_related("contact", "assigned_to").order_by("-last_message_at", "-created_at")[:8]
         docs = KnowledgeDocument.objects.filter(company=company)
+        follow_ups = conversations.filter(
+            opportunity_status=Conversation.OpportunityStatus.OPEN,
+            lead_temperature__in=(Conversation.LeadTemperature.HOT, Conversation.LeadTemperature.WARM),
+            next_follow_up_at__lte=timezone.now(),
+        ).exclude(status=Conversation.Status.CLOSED)
         return Response(
             {
                 "total_conversations": conversations.count(),
@@ -286,6 +292,19 @@ class DashboardView(APIView):
                     status__in=(KnowledgeDocument.Status.PENDING, KnowledgeDocument.Status.PROCESSING)
                 ).count(),
                 "documents_failed": docs.filter(status=KnowledgeDocument.Status.FAILED).count(),
+                "hot_leads": conversations.filter(
+                    lead_temperature=Conversation.LeadTemperature.HOT,
+                    opportunity_status=Conversation.OpportunityStatus.OPEN,
+                ).count(),
+                "warm_leads": conversations.filter(
+                    lead_temperature=Conversation.LeadTemperature.WARM,
+                    opportunity_status=Conversation.OpportunityStatus.OPEN,
+                ).count(),
+                "follow_ups_due": follow_ups.count(),
+                "follow_up_conversations": ConversationSerializer(
+                    follow_ups.select_related("contact", "assigned_to", "whatsapp_number")
+                    .order_by("next_follow_up_at")[:8], many=True
+                ).data,
                 "recent_conversations": ConversationSerializer(recent, many=True).data,
             }
         )
@@ -414,7 +433,10 @@ class ContactConversationsView(APIView):
 class ConversationListView(CompanyModelListCreateView):
     model = Conversation
     serializer_class = ConversationSerializer
-    filter_fields = ("status", "assigned_to_id", "whatsapp_number_id", "ai_paused")
+    filter_fields = (
+        "status", "assigned_to_id", "whatsapp_number_id", "ai_paused", "lead_temperature",
+        "opportunity_status",
+    )
     search_fields = ("contact__name", "contact__phone", "contact__wa_id")
 
     def get_queryset(self, request, company):
@@ -543,12 +565,31 @@ class ConversationMessagesView(APIView):
             outgoing.save(update_fields=("external_id", "status"))
             conversation.last_message_at = outgoing.created_at
             conversation.save(update_fields=("last_message_at",))
+            analyze_conversation.delay(conversation.pk)
             return Response(MessageSerializer(outgoing).data, status=status.HTTP_201_CREATED)
         finally:
             try:
                 lock.release()
             except LockError:
                 logger.warning("O lock do atendimento expirou antes da liberação; conversation_id=%s", conversation.pk)
+
+
+class FollowUpListView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    def get(self, request, company_id):
+        company, _ = _company_for_request(request, company_id)
+        queryset = Conversation.objects.filter(
+            company=company,
+            opportunity_status=Conversation.OpportunityStatus.OPEN,
+            lead_temperature__in=(Conversation.LeadTemperature.HOT, Conversation.LeadTemperature.WARM),
+            next_follow_up_at__lte=timezone.now(),
+        ).exclude(status=Conversation.Status.CLOSED).select_related(
+            "contact", "assigned_to", "whatsapp_number"
+        ).order_by("next_follow_up_at", "-purchase_intent_score")
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(queryset, request, view=self)
+        return paginator.get_paginated_response(ConversationSerializer(page, many=True).data)
 
 
 class ConversationActionView(APIView):
@@ -571,6 +612,33 @@ class ConversationActionView(APIView):
                 Conversation.Status.CLOSED if action == "close" else Conversation.Status.OPEN
             )
             conversation.save(update_fields=("status",))
+        elif action in {"mark-won", "mark-lost"}:
+            conversation.opportunity_status = (
+                Conversation.OpportunityStatus.WON
+                if action == "mark-won"
+                else Conversation.OpportunityStatus.LOST
+            )
+            conversation.next_follow_up_at = None
+            conversation.save(update_fields=("opportunity_status", "next_follow_up_at"))
+        elif action == "reopen-opportunity":
+            conversation.opportunity_status = Conversation.OpportunityStatus.OPEN
+            conversation.next_follow_up_at = timezone.now()
+            conversation.save(update_fields=("opportunity_status", "next_follow_up_at"))
+        elif action == "complete-follow-up":
+            conversation.follow_up_completed_at = timezone.now()
+            conversation.next_follow_up_at = None
+            conversation.save(update_fields=("follow_up_completed_at", "next_follow_up_at"))
+        elif action == "snooze-follow-up":
+            try:
+                days = int(request.data.get("days", 1))
+            except (TypeError, ValueError) as exc:
+                raise ValidationError({"days": "Informe um número de dias válido."}) from exc
+            if not 1 <= days <= 365:
+                raise ValidationError({"days": "O prazo deve estar entre 1 e 365 dias."})
+            conversation.next_follow_up_at = timezone.now() + timedelta(days=days)
+            conversation.save(update_fields=("next_follow_up_at",))
+        elif action == "analyze":
+            analyze_conversation.delay(conversation.pk)
         else:
             raise NotFound("Ação não encontrada.")
         return Response(ConversationSerializer(conversation).data)

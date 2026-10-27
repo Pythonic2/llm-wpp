@@ -60,12 +60,35 @@ class Conversation(models.Model):
         QUALIFYING = "qualifying", "Em qualificação"
         QUALIFIED = "qualified", "Qualificada"
         CLOSED = "closed", "Encerrada"
+    class LeadTemperature(models.TextChoices):
+        UNKNOWN = "unknown", "Não analisada"
+        HOT = "hot", "Quente"
+        WARM = "warm", "Morna"
+        COLD = "cold", "Fria"
+    class OpportunityStatus(models.TextChoices):
+        OPEN = "open", "Em aberto"
+        WON = "won", "Ganha"
+        LOST = "lost", "Perdida"
     company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="conversations")
     whatsapp_number = models.ForeignKey(WhatsAppNumber, on_delete=models.PROTECT, related_name="conversations")
     contact = models.ForeignKey(Contact, on_delete=models.PROTECT, related_name="conversations")
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.OPEN)
     lead_stage = models.CharField(max_length=80, blank=True)
     lead_data = models.JSONField(default=dict, blank=True)
+    lead_temperature = models.CharField(
+        max_length=12, choices=LeadTemperature.choices, default=LeadTemperature.UNKNOWN
+    )
+    purchase_intent_score = models.PositiveSmallIntegerField(default=0)
+    analysis_summary = models.TextField(blank=True)
+    buying_signals = models.JSONField(default=list, blank=True)
+    objections = models.JSONField(default=list, blank=True)
+    recommended_action = models.CharField(max_length=500, blank=True)
+    analyzed_at = models.DateTimeField(null=True, blank=True)
+    opportunity_status = models.CharField(
+        max_length=12, choices=OpportunityStatus.choices, default=OpportunityStatus.OPEN
+    )
+    next_follow_up_at = models.DateTimeField(null=True, blank=True)
+    follow_up_completed_at = models.DateTimeField(null=True, blank=True)
     ai_paused = models.BooleanField(default=False, help_text="Pausa respostas automáticas para atendimento humano")
     ai_paused_at = models.DateTimeField(null=True, blank=True)
     assigned_to = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="assigned_conversations")

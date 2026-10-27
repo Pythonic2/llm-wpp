@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 import re
 import unicodedata
 from pathlib import Path
@@ -121,6 +122,55 @@ CONTEXTO:\n{context}\n\nPERGUNTA:\n{question}"""
         flags=re.IGNORECASE,
     )
     return answer[:1].upper() + answer[1:]
+
+
+def analyze_sales_conversation(conversation_id):
+    """Return a structured, evidence-based sales analysis for a conversation."""
+    from .models import Conversation, Message
+
+    conversation = Conversation.objects.select_related("contact").get(pk=conversation_id)
+    messages = list(
+        Message.objects.filter(conversation=conversation, message_type="text")
+        .exclude(text="")
+        .order_by("-created_at", "-pk")[:60]
+    )
+    messages.reverse()
+    transcript = "\n".join(
+        f"{'CLIENTE' if message.direction == Message.Direction.INBOUND else 'ATENDENTE'}: {message.text}"
+        for message in messages
+    )
+    prompt = f"""Analise a conversa comercial abaixo usando somente o que foi realmente dito.
+Classifique a intenção de compra:
+- hot (quente): sinais concretos de avanço, como pedir preço/proposta, pagamento, disponibilidade, prazo de contratação, demonstração ou como fechar.
+- warm (morna): interesse real, explicação de necessidade, perguntas sobre solução ou comparação, mas sem passo concreto de compra.
+- cold (fria): curiosidade genérica, pouco engajamento, assunto sem intenção comercial, suporte, emprego ou spam.
+
+Não trate cordialidade isolada como intenção de compra. Baseie cada sinal nos itens conversados.
+Retorne apenas JSON válido neste formato:
+{{"temperature":"hot|warm|cold","score":0,"summary":"resumo curto","buying_signals":["evidência"],"objections":["objeção"],"recommended_action":"próxima ação objetiva"}}
+O score deve ser de 0 a 100.
+
+CONVERSA:
+{transcript or "Sem mensagens de texto."}"""
+    response = gemini_client().models.generate_content(
+        model=settings.GEMINI_CHAT_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(response_mime_type="application/json"),
+    )
+    raw = (response.text or "{}").strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE)
+    result = json.loads(raw)
+    temperature = result.get("temperature")
+    if temperature not in {"hot", "warm", "cold"}:
+        raise ValueError("A análise retornou uma temperatura inválida.")
+    result["score"] = max(0, min(100, int(result.get("score", 0))))
+    for field in ("buying_signals", "objections"):
+        value = result.get(field, [])
+        result[field] = [str(item)[:300] for item in value[:10]] if isinstance(value, list) else []
+    result["summary"] = str(result.get("summary", ""))[:2000]
+    result["recommended_action"] = str(result.get("recommended_action", ""))[:500]
+    return result
 
 
 def _brazilian_mobile_with_ninth_digit(recipient):
