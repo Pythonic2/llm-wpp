@@ -152,7 +152,11 @@ O score deve ser de 0 a 100.
 
 CONVERSA:
 {transcript or "Sem mensagens de texto."}"""
-    response = gemini_client().models.generate_content(
+    # Keep the client alive for the entire request. Accessing `.models` from a
+    # temporary Client can let its finalizer close the underlying httpx client
+    # before generate_content finishes, especially in Celery prefork workers.
+    client = gemini_client()
+    response = client.models.generate_content(
         model=settings.GEMINI_CHAT_MODEL,
         contents=prompt,
         config=types.GenerateContentConfig(response_mime_type="application/json"),

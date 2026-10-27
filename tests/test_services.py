@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
-from saas.services import answer_with_rag, greeting_response, send_whatsapp_text, split_text
+from saas.services import analyze_sales_conversation, answer_with_rag, greeting_response, send_whatsapp_text, split_text
 
 def test_split_text(): assert len(split_text("Uma frase. " * 100, size=100, overlap=20)) > 1
 
@@ -39,6 +39,27 @@ def test_rag_removes_context_introduction_from_answer(client_factory, retrieve, 
     assert answer_with_rag("tenant", "Quais serviços vocês oferecem?") == (
         "Os principais serviços oferecidos pela empresa são consultoria e suporte."
     )
+
+
+@patch("saas.models.Message.objects.filter")
+@patch("saas.models.Conversation.objects.select_related")
+@patch("saas.services.gemini_client")
+def test_sales_analysis_keeps_gemini_client_alive(client_factory, select_related, message_filter, settings):
+    conversation = SimpleNamespace(pk=7, contact=SimpleNamespace(name="Cliente"))
+    select_related.return_value.get.return_value = conversation
+    message_filter.return_value.exclude.return_value.order_by.return_value.__getitem__.return_value = []
+    client = Mock()
+    client.models.generate_content.return_value.text = (
+        '{"temperature":"warm","score":60,"summary":"Tem interesse.",'
+        '"buying_signals":["Perguntou sobre a solução"],"objections":[],'
+        '"recommended_action":"Entender o prazo."}'
+    )
+    client_factory.return_value = client
+
+    result = analyze_sales_conversation(conversation.pk)
+
+    assert result["temperature"] == "warm"
+    client.models.generate_content.assert_called_once()
 
 @patch("saas.services.httpx.post")
 def test_whatsapp_sender_uses_cloud_api(post, settings):
