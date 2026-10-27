@@ -2,9 +2,9 @@ services:
   db:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_DB: gesttech
-      POSTGRES_USER: gesttech
-      POSTGRES_PASSWORD: gesttech
+      POSTGRES_DB: ${POSTGRES_DB:-gesttech}
+      POSTGRES_USER: ${POSTGRES_USER:-gesttech}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gesttech}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
@@ -34,7 +34,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://gesttech:gesttech@db:5432/gesttech
+      DATABASE_URL: postgresql://${POSTGRES_USER:-gesttech}:${POSTGRES_PASSWORD:-gesttech}@db:5432/${POSTGRES_DB:-gesttech}
       CELERY_BROKER_URL: redis://redis:6379/0
       FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:-http://localhost:5173}
       CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-http://localhost:5173,http://localhost:8123}
@@ -56,7 +56,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://gesttech:gesttech@db:5432/gesttech
+      DATABASE_URL: postgresql://${POSTGRES_USER:-gesttech}:${POSTGRES_PASSWORD:-gesttech}@db:5432/${POSTGRES_DB:-gesttech}
       CELERY_BROKER_URL: redis://redis:6379/0
     volumes:
       - media_data:/app/media
