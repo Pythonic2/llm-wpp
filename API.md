@@ -40,7 +40,7 @@ Membros podem ser listados por qualquer integrante; somente owner/admin (e super
 - `GET /companies/{company_id}/conversations/` aceita `status`, `assigned_to_id`, `whatsapp_number_id`, `ai_paused` e `search`.
 - `GET|PATCH /companies/{company_id}/conversations/{id}/`. A atualização permite `status`, `lead_stage`, `lead_data` e `assigned_to_id`.
 - `GET /companies/{company_id}/conversations/{id}/messages/` responde uma página cronológica de mensagens. Por padrão, começa na página mais recente; informe `page` para percorrer as anteriores.
-- `POST /companies/{company_id}/conversations/{id}/messages/`: recebe `{ "text": "..." }` e requer `Idempotency-Key` único. Pausa a IA sob o mesmo lock Redis por conversa, persiste o status `pending`, `sent` ou `failed`, responde `409` se outra resposta da IA estiver finalizando e `502` se a Cloud API falhar.
+- `POST /companies/{company_id}/conversations/{id}/messages/`: recebe `{ "text": "..." }`. Aceita um `Idempotency-Key` único para permitir tentativas seguras; quando o cabeçalho não é enviado, o servidor gera uma chave. Pausa a IA sob o mesmo lock Redis por conversa, persiste o status `pending`, `sent` ou `failed`, responde `409` se outra resposta da IA estiver finalizando e `502` se a Cloud API falhar.
 - Ações `POST /companies/{company_id}/conversations/{id}/{pause-ai|resume-ai|assign|close|reopen}/`. `assign` recebe `{ "user_id": 1 }` ou `null`.
 
 Todos os endpoints operacionais permitem acesso a `agent`, `admin` e `owner`. A lista de números pode ser consultada por qualquer membro; criar, alterar ou excluir integrações exige `admin` ou `owner`.

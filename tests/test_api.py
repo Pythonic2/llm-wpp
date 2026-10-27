@@ -110,6 +110,25 @@ def test_manual_message_sends_once_and_pauses_ai(tenant_data):
     send.assert_called_once()
 
 
+def test_manual_message_generates_idempotency_key_when_header_is_missing(tenant_data):
+    with patch("saas.api.conversation_ai_lock") as lock_factory, patch(
+        "saas.api.send_whatsapp_text", return_value="wamid.with-server-key"
+    ):
+        lock_factory.return_value.acquire.return_value = True
+        response = api_client(tenant_data["user"]).post(
+            company_url(
+                tenant_data["company"].pk,
+                f"conversations/{tenant_data['conversation'].pk}/messages/",
+            ),
+            {"text": "Mensagem sem chave do navegador"},
+            format="json",
+        )
+
+    assert response.status_code == 201
+    message = Message.objects.get(external_id="wamid.with-server-key")
+    assert message.idempotency_key.startswith("server:")
+
+
 def test_manual_message_failure_is_persisted(tenant_data):
     with patch("saas.api.conversation_ai_lock") as lock_factory, patch(
         "saas.api.send_whatsapp_text", side_effect=RuntimeError("offline")

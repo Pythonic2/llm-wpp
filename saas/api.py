@@ -469,8 +469,13 @@ class ConversationMessagesView(APIView):
         key = request.headers.get("Idempotency-Key", "").strip()
         if not isinstance(text, str) or not text.strip():
             raise ValidationError({"text": "Informe o texto da mensagem."})
-        if not key or len(key) > 128:
+        if len(key) > 128:
             raise ValidationError({"Idempotency-Key": "Envie uma chave de idempotência válida (até 128 caracteres)."})
+        # Older browsers and non-secure contexts may not expose
+        # crypto.randomUUID(). Keep client-provided keys idempotent, but do not
+        # prevent a message from being sent when the client cannot create one.
+        if not key:
+            key = f"server:{uuid.uuid4()}"
         try:
             lock = conversation_ai_lock(conversation.company_id, conversation.pk, blocking_timeout=15)
             acquired = lock.acquire(blocking=True)
