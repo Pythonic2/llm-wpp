@@ -21,7 +21,24 @@ def test_rag_uses_retrieved_context(client_factory, retrieve, settings):
     client = Mock(); client.models.generate_content.return_value.text = "A troca pode ser feita em 7 dias."
     client_factory.return_value = client
     assert answer_with_rag("tenant", "Qual o prazo?") == "A troca pode ser feita em 7 dias."
-    assert "A política permite troca em 7 dias." in client.models.generate_content.call_args.kwargs["contents"]
+    prompt = client.models.generate_content.call_args.kwargs["contents"]
+    assert "A política permite troca em 7 dias." in prompt
+    assert "Atue como uma pessoa da equipe de atendimento" in prompt
+    assert "sem dizer ou insinuar que consultou um contexto" in prompt
+
+@patch("saas.services.retrieve_context")
+@patch("saas.services.gemini_client")
+def test_rag_removes_context_introduction_from_answer(client_factory, retrieve, settings):
+    retrieve.return_value = [SimpleNamespace(content="A empresa oferece consultoria e suporte.")]
+    client = Mock()
+    client.models.generate_content.return_value.text = (
+        "Com base no contexto, os principais serviços oferecidos pela empresa são consultoria e suporte."
+    )
+    client_factory.return_value = client
+
+    assert answer_with_rag("tenant", "Quais serviços vocês oferecem?") == (
+        "Os principais serviços oferecidos pela empresa são consultoria e suporte."
+    )
 
 @patch("saas.services.httpx.post")
 def test_whatsapp_sender_uses_cloud_api(post, settings):
