@@ -10,6 +10,7 @@ Backend Django/DRF multiempresa para atendimento por WhatsApp Cloud API, respost
 - SDK oficial `google-genai` para geração e embeddings projetados em 768 dimensões, compatíveis com o índice HNSW.
 - Empresas, associações de usuário, múltiplos números com toggles de IA, contatos, conversas, mensagens, bases, documentos e chunks.
 - Conversas incluem `status`, `lead_stage` e `lead_data` para qualificação futura.
+- Cada empresa pode personalizar a persona, o tom e a abordagem da IA em Configurações; as regras de segurança e uso do contexto permanecem fixas no servidor.
 
 O isolamento é aplicado por `company` em todas as entidades, validação de relações, constraints compostas, filtro por associação no Admin e filtro obrigatório na busca vetorial. Superusuários veem tudo; usuários staff veem somente suas empresas.
 

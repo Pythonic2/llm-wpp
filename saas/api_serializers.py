@@ -39,6 +39,18 @@ class CompanySerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class CompanyAISettingsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Company
+        fields = ("ai_instructions",)
+
+    def validate_ai_instructions(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("Escreva pelo menos uma instrução para o atendimento.")
+        return value
+
+
 class ContactSerializer(serializers.ModelSerializer):
     wa_id = serializers.CharField(required=True)
 

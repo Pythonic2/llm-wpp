@@ -20,6 +20,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .api_serializers import (
+    CompanyAISettingsSerializer,
     CompanySerializer,
     ContactSerializer,
     ConversationSerializer,
@@ -186,12 +187,22 @@ class CompanyDetailView(APIView):
     def get(self, request, company_id):
         company, membership = _company_for_request(request, company_id)
         data = dict(CompanySerializer(company).data)
+        data["ai_instructions"] = company.ai_instructions
         data["role"] = membership.role if membership else "owner"
         data["integrations"] = {
             "whatsapp_configured": bool(settings.WHATSAPP_ACCESS_TOKEN and settings.WHATSAPP_APP_SECRET),
             "gemini_configured": bool(settings.GEMINI_API_KEY),
             "webhook_path": "/api/webhooks/whatsapp/",
         }
+        return Response(data)
+
+    def patch(self, request, company_id):
+        company, _ = _company_for_request(request, company_id, "admin")
+        serializer = CompanyAISettingsSerializer(company, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        data = dict(CompanySerializer(company).data)
+        data["ai_instructions"] = company.ai_instructions
         return Response(data)
 
 

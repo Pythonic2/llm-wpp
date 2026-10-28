@@ -1,5 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+
+import pytest
+
 from saas.services import analyze_sales_conversation, answer_with_rag, greeting_response, send_whatsapp_text, split_text
 
 def test_split_text(): assert len(split_text("Uma frase. " * 100, size=100, overlap=20)) > 1
@@ -10,25 +13,38 @@ def test_greeting_response_recognizes_simple_greetings():
     assert greeting_response("Olá, quero saber o prazo") is None
 
 @patch("saas.services.retrieve_context")
-def test_greeting_does_not_query_knowledge_base(retrieve):
-    assert answer_with_rag("tenant", "Olá!") == "Olá! Tudo bem? Como posso ajudar você hoje?"
+@patch("saas.services.gemini_client")
+@pytest.mark.django_db
+def test_greeting_uses_company_instructions_without_querying_knowledge_base(client_factory, retrieve, tenant_data):
+    client = Mock()
+    client.models.generate_content.return_value.text = "Olá! Como posso ajudar?"
+    client_factory.return_value = client
+
+    assert answer_with_rag(tenant_data["company"].pk, "Olá!") == "Olá! Como posso ajudar?"
     retrieve.assert_not_called()
+    prompt = client.models.generate_content.call_args.kwargs["contents"]
+    assert tenant_data["company"].ai_instructions in prompt
 
 @patch("saas.services.retrieve_context")
 @patch("saas.services.gemini_client")
-def test_rag_uses_retrieved_context(client_factory, retrieve, settings):
+@pytest.mark.django_db
+def test_rag_uses_retrieved_context(client_factory, retrieve, settings, tenant_data):
+    tenant_data["company"].ai_instructions = "Atenda como uma confeiteira alegre e objetiva."
+    tenant_data["company"].save(update_fields=["ai_instructions"])
     retrieve.return_value = [SimpleNamespace(content="A política permite troca em 7 dias.")]
     client = Mock(); client.models.generate_content.return_value.text = "A troca pode ser feita em 7 dias."
     client_factory.return_value = client
-    assert answer_with_rag("tenant", "Qual o prazo?") == "A troca pode ser feita em 7 dias."
+    assert answer_with_rag(tenant_data["company"].pk, "Qual o prazo?") == "A troca pode ser feita em 7 dias."
     prompt = client.models.generate_content.call_args.kwargs["contents"]
     assert "A política permite troca em 7 dias." in prompt
-    assert "Atue como uma pessoa da equipe de atendimento" in prompt
-    assert "sem dizer ou insinuar que consultou um contexto" in prompt
+    assert "Atenda como uma confeiteira alegre e objetiva." in prompt
+    assert "REGRAS OBRIGATÓRIAS DO SISTEMA" in prompt
+    assert "use exclusivamente o conteúdo" in prompt
 
 @patch("saas.services.retrieve_context")
 @patch("saas.services.gemini_client")
-def test_rag_removes_context_introduction_from_answer(client_factory, retrieve, settings):
+@pytest.mark.django_db
+def test_rag_removes_context_introduction_from_answer(client_factory, retrieve, settings, tenant_data):
     retrieve.return_value = [SimpleNamespace(content="A empresa oferece consultoria e suporte.")]
     client = Mock()
     client.models.generate_content.return_value.text = (
@@ -36,7 +52,7 @@ def test_rag_removes_context_introduction_from_answer(client_factory, retrieve, 
     )
     client_factory.return_value = client
 
-    assert answer_with_rag("tenant", "Quais serviços vocês oferecem?") == (
+    assert answer_with_rag(tenant_data["company"].pk, "Quais serviços vocês oferecem?") == (
         "Os principais serviços oferecidos pela empresa são consultoria e suporte."
     )
 

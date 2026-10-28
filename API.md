@@ -4,6 +4,19 @@ Todos os endpoints administrativos estão sob `/api/v1/` e usam autenticação p
 
 O webhook da Meta continua separado em `/api/webhooks/whatsapp/` e não faz parte da API do navegador.
 
+## Instruções da IA por empresa
+
+`GET /api/v1/companies/{company_id}/` retorna `ai_instructions`. Proprietários e administradores podem atualizar o campo com:
+
+```http
+PATCH /api/v1/companies/{company_id}/
+Content-Type: application/json
+
+{"ai_instructions":"Atenda como especialista do meu nicho, com linguagem clara e acolhedora."}
+```
+
+O limite é de 8.000 caracteres. Regras de isolamento, anti-injeção e uso exclusivo do contexto factual não são editáveis pelo cliente.
+
 ## Sessão
 
 | Método e rota | Contrato |
