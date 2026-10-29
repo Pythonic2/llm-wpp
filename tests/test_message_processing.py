@@ -4,7 +4,7 @@ from django.utils import timezone
 import pytest
 
 from saas.models import Conversation, Message
-from saas.tasks import analyze_conversation, answer_inbound_message
+from saas.tasks import analyze_conversation, answer_inbound_message, notify_hot_lead
 
 
 pytestmark = pytest.mark.django_db
@@ -81,3 +81,59 @@ def test_sales_analysis_updates_follow_up(analysis, tenant_data):
     assert tenant_data["conversation"].lead_temperature == Conversation.LeadTemperature.HOT
     assert tenant_data["conversation"].purchase_intent_score == 91
     assert tenant_data["conversation"].next_follow_up_at is not None
+
+
+@patch("saas.tasks.notify_hot_lead.delay")
+@patch("saas.tasks.analyze_sales_conversation")
+def test_hot_lead_notification_is_optional_and_only_queued_on_transition(
+    analysis, notify, tenant_data, django_capture_on_commit_callbacks
+):
+    tenant_data["company"].hot_lead_notifications_enabled = True
+    tenant_data["company"].hot_lead_notification_phone = "+55 11 99999-0000"
+    tenant_data["company"].save(
+        update_fields=["hot_lead_notifications_enabled", "hot_lead_notification_phone"]
+    )
+    analysis.return_value = {
+        "temperature": "hot",
+        "score": 91,
+        "summary": "Cliente pediu proposta para contratar.",
+        "buying_signals": ["Pediu uma proposta"],
+        "objections": [],
+        "recommended_action": "Enviar proposta.",
+    }
+
+    with django_capture_on_commit_callbacks(execute=True):
+        analyze_conversation.run(tenant_data["conversation"].pk)
+    tenant_data["conversation"].refresh_from_db()
+    assert tenant_data["conversation"].hot_lead_notified_at is not None
+    notify.assert_called_once_with(tenant_data["conversation"].pk)
+
+    with django_capture_on_commit_callbacks(execute=True):
+        analyze_conversation.run(tenant_data["conversation"].pk)
+    tenant_data["conversation"].refresh_from_db()
+    assert tenant_data["conversation"].hot_lead_notified_at is not None
+    assert notify.call_count == 1
+
+
+@patch("saas.tasks.send_whatsapp_text", return_value="wamid.alert")
+def test_hot_lead_notification_contains_conversation_summary(send, tenant_data):
+    company = tenant_data["company"]
+    company.hot_lead_notifications_enabled = True
+    company.hot_lead_notification_phone = "5511999990000"
+    company.save(update_fields=["hot_lead_notifications_enabled", "hot_lead_notification_phone"])
+    conversation = tenant_data["conversation"]
+    conversation.lead_temperature = Conversation.LeadTemperature.HOT
+    conversation.purchase_intent_score = 91
+    conversation.analysis_summary = "Cliente quer receber uma proposta hoje."
+    conversation.recommended_action = "Ligar e enviar a proposta."
+    conversation.save(
+        update_fields=[
+            "lead_temperature", "purchase_intent_score", "analysis_summary", "recommended_action"
+        ]
+    )
+
+    notify_hot_lead.run(conversation.pk)
+
+    assert send.call_args.args[1] == "5511999990000"
+    assert "Novo lead quente" in send.call_args.args[2]
+    assert "Cliente quer receber uma proposta hoje." in send.call_args.args[2]

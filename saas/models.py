@@ -16,6 +16,12 @@ class Company(models.Model):
     name = models.CharField(max_length=160)
     slug = models.SlugField(unique=True)
     ai_instructions = models.TextField(default=DEFAULT_AI_INSTRUCTIONS, max_length=8000)
+    hot_lead_notifications_enabled = models.BooleanField(default=False)
+    hot_lead_notification_phone = models.CharField(
+        max_length=32,
+        blank=True,
+        help_text="WhatsApp que recebe alertas de leads quentes, com DDI e DDD",
+    )
     users = models.ManyToManyField(settings.AUTH_USER_MODEL, through="Membership", related_name="companies")
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -90,6 +96,7 @@ class Conversation(models.Model):
     objections = models.JSONField(default=list, blank=True)
     recommended_action = models.CharField(max_length=500, blank=True)
     analyzed_at = models.DateTimeField(null=True, blank=True)
+    hot_lead_notified_at = models.DateTimeField(null=True, blank=True)
     opportunity_status = models.CharField(
         max_length=12, choices=OpportunityStatus.choices, default=OpportunityStatus.OPEN
     )

@@ -188,6 +188,8 @@ class CompanyDetailView(APIView):
         company, membership = _company_for_request(request, company_id)
         data = dict(CompanySerializer(company).data)
         data["ai_instructions"] = company.ai_instructions
+        data["hot_lead_notifications_enabled"] = company.hot_lead_notifications_enabled
+        data["hot_lead_notification_phone"] = company.hot_lead_notification_phone
         data["role"] = membership.role if membership else "owner"
         data["integrations"] = {
             "whatsapp_configured": bool(settings.WHATSAPP_ACCESS_TOKEN and settings.WHATSAPP_APP_SECRET),
@@ -203,6 +205,8 @@ class CompanyDetailView(APIView):
         serializer.save()
         data = dict(CompanySerializer(company).data)
         data["ai_instructions"] = company.ai_instructions
+        data["hot_lead_notifications_enabled"] = company.hot_lead_notifications_enabled
+        data["hot_lead_notification_phone"] = company.hot_lead_notification_phone
         return Response(data)
 
 

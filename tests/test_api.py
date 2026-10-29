@@ -57,6 +57,21 @@ def test_admin_can_update_company_ai_instructions(tenant_data):
     assert tenant_data["company"].ai_instructions == response.data["ai_instructions"]
 
 
+def test_admin_can_enable_hot_lead_notifications(tenant_data):
+    response = api_client(tenant_data["user"]).patch(
+        company_url(tenant_data["company"].pk),
+        {
+            "hot_lead_notifications_enabled": True,
+            "hot_lead_notification_phone": "+55 11 99999-0000",
+        },
+        format="json",
+    )
+
+    assert response.status_code == 200
+    assert response.data["hot_lead_notifications_enabled"] is True
+    assert response.data["hot_lead_notification_phone"] == "+55 11 99999-0000"
+
+
 def test_agent_cannot_update_company_ai_instructions(tenant_data):
     Membership.objects.filter(company=tenant_data["company"], user=tenant_data["user"]).update(role="agent")
 

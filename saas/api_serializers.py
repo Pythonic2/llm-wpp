@@ -42,13 +42,40 @@ class CompanySerializer(serializers.ModelSerializer):
 class CompanyAISettingsSerializer(serializers.ModelSerializer):
     class Meta:
         model = Company
-        fields = ("ai_instructions",)
+        fields = (
+            "ai_instructions",
+            "hot_lead_notifications_enabled",
+            "hot_lead_notification_phone",
+        )
 
     def validate_ai_instructions(self, value):
         value = value.strip()
         if not value:
             raise serializers.ValidationError("Escreva pelo menos uma instrução para o atendimento.")
         return value
+
+    def validate_hot_lead_notification_phone(self, value):
+        value = value.strip()
+        digits = "".join(character for character in value if character.isdigit())
+        if value and not 8 <= len(digits) <= 15:
+            raise serializers.ValidationError("Informe um WhatsApp válido, com DDI e DDD.")
+        return value
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        enabled = attrs.get(
+            "hot_lead_notifications_enabled",
+            getattr(self.instance, "hot_lead_notifications_enabled", False),
+        )
+        phone = attrs.get(
+            "hot_lead_notification_phone",
+            getattr(self.instance, "hot_lead_notification_phone", ""),
+        )
+        if enabled and not phone:
+            raise serializers.ValidationError(
+                {"hot_lead_notification_phone": "Cadastre o WhatsApp que receberá os alertas."}
+            )
+        return attrs
 
 
 class ContactSerializer(serializers.ModelSerializer):

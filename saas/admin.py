@@ -24,7 +24,7 @@ class TenantAdmin(admin.ModelAdmin):
 
 @admin.register(Company)
 class CompanyAdmin(admin.ModelAdmin):
-    list_display = ("name", "slug", "created_at")
+    list_display = ("name", "slug", "hot_lead_notifications_enabled", "created_at")
     def get_queryset(self, request):
         qs = super().get_queryset(request)
         return qs if request.user.is_superuser else qs.filter(memberships__user=request.user).distinct()

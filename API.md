@@ -27,7 +27,7 @@ O limite é de 8.000 caracteres. Regras de isolamento, anti-injeção e uso excl
 | `POST /auth/refresh/` | Renova a chave da sessão e responde `{ "user": User }`. |
 | `GET /auth/me/` | Responde usuário e empresas disponíveis para a sessão. |
 
-`User` inclui `id`, `username`, `email`, `first_name` e `last_name`. `Company` inclui `id` (UUID), `name`, `slug`, `created_at` e `role`.
+`User` inclui `id`, `username`, `email`, `first_name` e `last_name`. `Company` inclui `id` (UUID), `name`, `slug`, `created_at` e `role`. No detalhe da empresa, administradores podem configurar `hot_lead_notifications_enabled` e `hot_lead_notification_phone` (com DDI e DDD); quando uma conversa passa a quente, esse WhatsApp recebe o resumo comercial e a próxima ação.
 
 ## Empresas e dashboard
 

@@ -20,7 +20,11 @@ from .services import (
 def analyze_conversation(conversation_id):
     analysis = analyze_sales_conversation(conversation_id)
     with transaction.atomic():
-        conversation = Conversation.objects.select_for_update().get(pk=conversation_id)
+        conversation = Conversation.objects.select_for_update().select_related("company").get(pk=conversation_id)
+        became_hot = (
+            conversation.lead_temperature != Conversation.LeadTemperature.HOT
+            and analysis["temperature"] == Conversation.LeadTemperature.HOT
+        )
         conversation.lead_temperature = analysis["temperature"]
         conversation.purchase_intent_score = analysis["score"]
         conversation.analysis_summary = analysis["summary"]
@@ -28,6 +32,14 @@ def analyze_conversation(conversation_id):
         conversation.objections = analysis["objections"]
         conversation.recommended_action = analysis["recommended_action"]
         conversation.analyzed_at = timezone.now()
+        if analysis["temperature"] != Conversation.LeadTemperature.HOT:
+            conversation.hot_lead_notified_at = None
+        elif (
+            became_hot
+            and conversation.company.hot_lead_notifications_enabled
+            and conversation.company.hot_lead_notification_phone
+        ):
+            conversation.hot_lead_notified_at = timezone.now()
         if conversation.opportunity_status == Conversation.OpportunityStatus.OPEN:
             delays = {
                 Conversation.LeadTemperature.HOT: timedelta(days=1),
@@ -40,9 +52,49 @@ def analyze_conversation(conversation_id):
             update_fields=[
                 "lead_temperature", "purchase_intent_score", "analysis_summary", "buying_signals",
                 "objections", "recommended_action", "analyzed_at", "next_follow_up_at",
-                "follow_up_completed_at",
+                "follow_up_completed_at", "hot_lead_notified_at",
             ]
         )
+        if became_hot and conversation.hot_lead_notified_at:
+            transaction.on_commit(lambda: notify_hot_lead.delay(conversation.pk))
+
+
+def _hot_lead_notification_text(conversation):
+    contact = conversation.contact
+    lines = [
+        "🔥 *Novo lead quente*",
+        "",
+        f"Cliente: {contact.name or 'Não informado'}",
+        f"WhatsApp: {contact.phone or contact.wa_id}",
+        f"Intenção de compra: {conversation.purchase_intent_score}/100",
+        f"Resumo: {conversation.analysis_summary or 'Sem resumo disponível.'}",
+    ]
+    if conversation.buying_signals:
+        lines.append("Sinais de compra: " + "; ".join(conversation.buying_signals[:3]))
+    if conversation.objections:
+        lines.append("Objeções: " + "; ".join(conversation.objections[:3]))
+    if conversation.recommended_action:
+        lines.append(f"Próxima ação: {conversation.recommended_action}")
+    return "\n".join(lines)[:4000]
+
+
+@shared_task(autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
+def notify_hot_lead(conversation_id):
+    conversation = Conversation.objects.select_related(
+        "company", "contact", "whatsapp_number"
+    ).get(pk=conversation_id)
+    company = conversation.company
+    if (
+        conversation.lead_temperature != Conversation.LeadTemperature.HOT
+        or not company.hot_lead_notifications_enabled
+        or not company.hot_lead_notification_phone
+    ):
+        return
+    send_whatsapp_text(
+        conversation.whatsapp_number,
+        company.hot_lead_notification_phone,
+        _hot_lead_notification_text(conversation),
+    )
 
 
 @shared_task(autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
