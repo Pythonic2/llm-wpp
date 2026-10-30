@@ -28,11 +28,8 @@ services:
       - pi_default
 
   backend:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      no_cache: true
-      pull: true
+    image: "ghcr.io/pythonic2/llm-wpp:${APP_IMAGE_TAG:?Defina APP_IMAGE_TAG no Portainer (ex.: sha-abc123...)}"
+    pull_policy: always
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-gesttech}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-gesttech}
@@ -70,11 +67,8 @@ services:
       - pi_default
 
   worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      no_cache: true
-      pull: true
+    image: "ghcr.io/pythonic2/llm-wpp:${APP_IMAGE_TAG:?Defina APP_IMAGE_TAG no Portainer (ex.: sha-abc123...)}"
+    pull_policy: always
     command: .venv/bin/celery -A gesttech worker -l info
     restart: unless-stopped
     environment:
