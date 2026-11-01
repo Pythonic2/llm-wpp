@@ -50,7 +50,7 @@ O webhook valida o desafio GET e a assinatura POST, e usa o `wamid` como chave i
 
 ## Gemini e RAG
 
-Defina `GEMINI_API_KEY`. A geração usa `gemini-3.8-flash`; a busca cosseno sempre filtra `company_id` e bases ativas, podendo ainda filtrar uma base específica. O prompt exige português brasileiro, resposta objetiva e uso exclusivo do contexto.
+Defina `GEMINI_API_KEY`. A geração usa `gemini-3.5-flash-lite`; a busca cosseno sempre filtra `company_id` e bases ativas, podendo ainda filtrar uma base específica. O prompt exige português brasileiro, resposta objetiva e uso exclusivo do contexto.
 
 Não coloque chaves no banco ou Git. Reinicie backend e worker ao alterar variáveis.
 

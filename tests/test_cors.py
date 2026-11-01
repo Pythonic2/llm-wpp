@@ -1,14 +1,14 @@
 def test_allowed_origin_receives_cors_headers(client, settings):
-    settings.CORS_ALLOWED_ORIGINS = ["http://192.168.0.7:8080"]
+    settings.CORS_ALLOWED_ORIGINS = ["http://192.168.0.6:8080"]
 
     response = client.options(
         "/api/v1/auth/me/",
-        HTTP_ORIGIN="http://192.168.0.7:8080",
+        HTTP_ORIGIN="http://192.168.0.6:8080",
         HTTP_ACCESS_CONTROL_REQUEST_METHOD="GET",
     )
 
     assert response.status_code == 204
-    assert response["Access-Control-Allow-Origin"] == "http://192.168.0.7:8080"
+    assert response["Access-Control-Allow-Origin"] == "http://192.168.0.6:8080"
     assert response["Access-Control-Allow-Credentials"] == "true"
     assert "X-CSRFToken" in response["Access-Control-Allow-Headers"]
 
