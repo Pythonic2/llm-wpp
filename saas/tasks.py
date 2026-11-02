@@ -1,7 +1,9 @@
+import logging
+from datetime import timedelta
+
 from celery import shared_task
 from django.db import transaction
 from django.utils import timezone
-from datetime import timedelta
 from redis.exceptions import LockError
 
 from .models import Conversation, KnowledgeChunk, KnowledgeDocument, MediaAsset, Message
@@ -18,6 +20,8 @@ from .services import (
     split_text,
     transcribe_audio,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @shared_task(autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
@@ -232,6 +236,7 @@ def answer_inbound_message(self, message_id):
 
         incoming.ai_status, incoming.ai_error = Message.AIStatus.PROCESSING, ""
         incoming.save(update_fields=["ai_status", "ai_error"])
+        selected_media = None
         try:
             answer = ""
             if incoming.message_type == "audio" and not incoming.transcription:
@@ -245,11 +250,32 @@ def answer_inbound_message(self, message_id):
                 except ValueError:
                     answer = "Desculpe, não consegui compreender esse áudio. Pode enviar novamente ou escrever sua mensagem?"
             if not answer:
+                recent_messages = list(
+                    Message.objects.filter(conversation_id=incoming.conversation_id)
+                    .exclude(pk=incoming.pk)
+                    .exclude(text="")
+                    .order_by("-created_at", "-pk")
+                    .values_list("direction", "text")[:4]
+                )
+                recent_messages.reverse()
+                media_context = "\n".join(
+                    f"{'CLIENTE' if direction == Message.Direction.INBOUND else 'ATENDENTE'}: {text[:400]}"
+                    for direction, text in recent_messages
+                )
+                try:
+                    selected_media = select_media_for_question(
+                        incoming.company_id, incoming.text, media_context
+                    )
+                except Exception:
+                    logger.exception(
+                        "Falha ao selecionar mídia para a mensagem %s", incoming.pk
+                    )
                 answer = answer_with_rag(
                     incoming.company_id,
                     incoming.text,
                     conversation_id=incoming.conversation_id,
                     current_message_id=incoming.pk,
+                    selected_media=selected_media,
                 )
         except Exception as exc:
             incoming.ai_error = str(exc)[:2000]
@@ -308,10 +334,6 @@ def answer_inbound_message(self, message_id):
         conversation.save(update_fields=["last_message_at"])
         incoming.ai_status, incoming.ai_error = Message.AIStatus.COMPLETED, ""
         incoming.save(update_fields=["ai_status", "ai_error"])
-        try:
-            selected_media = select_media_for_question(incoming.company_id, incoming.text)
-        except Exception:
-            selected_media = None
         if selected_media:
             send_selected_media.delay(incoming.pk, selected_media.pk)
         if incoming.message_type == "audio":

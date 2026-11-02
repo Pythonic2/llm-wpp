@@ -270,7 +270,7 @@ class MediaAsset(models.Model):
     search_text = models.TextField(max_length=8000)
     embedding = VectorField(dimensions=768, null=True, blank=True)
     is_active = models.BooleanField(default=True)
-    allow_ai_send = models.BooleanField(default=False)
+    allow_ai_send = models.BooleanField(default=True)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
     error = models.TextField(blank=True)
     meta_media_id = models.CharField(max_length=128, blank=True)

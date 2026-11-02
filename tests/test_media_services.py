@@ -67,6 +67,33 @@ def test_media_selection_accepts_only_returned_real_id(search, client_factory):
     assert select_media_for_question(1, "Tem foto da chopeira?") is None
 
 
+@patch("saas.services.gemini_client")
+@patch("saas.services.search_media")
+def test_media_selection_uses_recent_context_for_short_confirmation(search, client_factory):
+    asset = SimpleNamespace(
+        pk="2dc36c18-156c-44c5-a227-1015f6fa6711",
+        name="Foto da chopeira personalizada",
+        description="Chopeira com logo e cores da marca",
+        file_type="image",
+        product_service="Chopeira personalizada",
+    )
+    search.return_value = [asset]
+    client = Mock()
+    client.models.generate_content.return_value = SimpleNamespace(
+        text=json.dumps({"media_id": str(asset.pk)}), usage_metadata=None
+    )
+    client_factory.return_value = client
+
+    selected = select_media_for_question(
+        1,
+        "Sim, por favor",
+        "ATENDENTE: Quer que eu envie uma foto do modelo personalizado?",
+    )
+
+    assert selected is asset
+    search.assert_called_once()
+
+
 @patch("saas.services.httpx.post")
 def test_send_whatsapp_image_uses_existing_meta_id(post, settings):
     response = Mock(status_code=200)

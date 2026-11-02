@@ -45,7 +45,7 @@ services:
 
   worker:
     build: .
-    command: .venv/bin/celery -A gesttech worker -l info
+    command: .venv/bin/celery -A gesttech worker -l info --concurrency=${CELERY_CONCURRENCY:-2}
     env_file:
       - .env
     environment:

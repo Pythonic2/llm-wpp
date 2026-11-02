@@ -7,4 +7,5 @@ exec .venv/bin/gunicorn gesttech.wsgi:application \
   --workers "${GUNICORN_WORKERS:-2}" \
   --timeout "${GUNICORN_TIMEOUT:-180}" \
   --graceful-timeout "${GUNICORN_GRACEFUL_TIMEOUT:-30}" \
-  --keep-alive "${GUNICORN_KEEP_ALIVE:-5}"
+  --keep-alive "${GUNICORN_KEEP_ALIVE:-5}" \
+  --access-logfile -

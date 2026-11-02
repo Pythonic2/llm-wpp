@@ -80,7 +80,7 @@ services:
   worker:
     image: "ghcr.io/pythonic2/llm-wpp:${APP_IMAGE_TAG:?Defina APP_IMAGE_TAG no Portainer (ex.: sha-abc123...)}"
     pull_policy: always
-    command: .venv/bin/celery -A gesttech worker -l info
+    command: .venv/bin/celery -A gesttech worker -l info --concurrency=${CELERY_CONCURRENCY:-2}
     restart: unless-stopped
     environment:
       DB_NAME: ${DB_NAME:?Defina DB_NAME no Portainer}
@@ -95,6 +95,7 @@ services:
       DB_CONN_MAX_AGE: ${DB_CONN_MAX_AGE:-60}
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
+      CELERY_CONCURRENCY: ${CELERY_CONCURRENCY:-2}
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Defina DJANGO_SECRET_KEY no Portainer}
       DJANGO_DEBUG: ${DJANGO_DEBUG:-false}
       DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:?Defina DJANGO_ALLOWED_HOSTS no Portainer}
