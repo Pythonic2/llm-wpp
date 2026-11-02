@@ -4,6 +4,8 @@ from unittest.mock import Mock, patch
 import pytest
 
 from saas.services import (
+    _compact_conversation_context,
+    _compact_rag_context,
     _generation_config,
     _log_gemini_usage,
     analyze_sales_conversation,
@@ -63,6 +65,47 @@ def test_usage_log_handles_missing_metadata(caplog, settings):
         _log_gemini_usage(SimpleNamespace(), 0.1, "test")
     assert "total_tokens=0" in caplog.text
 
+
+@patch("saas.models.Message.objects.filter")
+@patch("saas.models.Conversation.objects.select_related")
+def test_conversation_context_uses_recent_messages_and_sales_summary(
+    select_related, message_filter, settings
+):
+    settings.GEMINI_HISTORY_MAX_MESSAGES = 2
+    conversation = SimpleNamespace(
+        contact=SimpleNamespace(name="Ana"),
+        lead_stage="proposta",
+        analysis_summary="Busca implantação neste mês.",
+        objections=["Prazo"],
+        buying_signals=["Pediu proposta"],
+    )
+    select_related.return_value.get.return_value = conversation
+    messages = [
+        SimpleNamespace(direction="out", text="Consigo enviar hoje."),
+        SimpleNamespace(direction="in", text="Qual é o prazo?"),
+    ]
+    queryset = message_filter.return_value.exclude.return_value.exclude.return_value
+    queryset.order_by.return_value.__getitem__.return_value = list(reversed(messages))
+
+    summary, history = _compact_conversation_context(10, current_message_id=99)
+
+    assert "Nome: Ana" in summary
+    assert "Pediu proposta" in summary
+    assert history == "ATENDENTE: Consigo enviar hoje.\nCLIENTE: Qual é o prazo?"
+    queryset.order_by.return_value.__getitem__.assert_called_once_with(slice(None, 2, None))
+
+
+def test_rag_context_limits_and_deduplicates_chunks(settings):
+    settings.GEMINI_RAG_CHUNK_MAX_CHARS = 20
+    chunks = [
+        SimpleNamespace(content="Informação repetida e muito extensa"),
+        SimpleNamespace(content="Informação repetida e muito extensa"),
+        SimpleNamespace(content="Outra informação"),
+    ]
+    context = _compact_rag_context(chunks)
+    assert context.count("Informação repetida") == 1
+    assert "Outra informação" in context
+
 @patch("saas.services.retrieve_context")
 @patch("saas.services.gemini_client")
 @pytest.mark.django_db
@@ -114,7 +157,13 @@ def test_rag_removes_context_introduction_from_answer(client_factory, retrieve, 
 @patch("saas.models.Conversation.objects.select_related")
 @patch("saas.services.gemini_client")
 def test_sales_analysis_keeps_gemini_client_alive(client_factory, select_related, message_filter, settings):
-    conversation = SimpleNamespace(pk=7, contact=SimpleNamespace(name="Cliente"))
+    conversation = SimpleNamespace(
+        pk=7,
+        contact=SimpleNamespace(name="Cliente"),
+        analysis_summary="",
+        buying_signals=[],
+        objections=[],
+    )
     select_related.return_value.get.return_value = conversation
     message_filter.return_value.exclude.return_value.order_by.return_value.__getitem__.return_value = []
     client = Mock()

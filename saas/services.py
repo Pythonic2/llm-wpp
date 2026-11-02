@@ -276,13 +276,25 @@ def analyze_sales_conversation(conversation_id):
     messages = list(
         Message.objects.filter(conversation=conversation, message_type="text")
         .exclude(text="")
-        .order_by("-created_at", "-pk")[:60]
+        .order_by("-created_at", "-pk")[:settings.GEMINI_HISTORY_MAX_MESSAGES]
     )
     messages.reverse()
     transcript = "\n".join(
         f"{'CLIENTE' if message.direction == Message.Direction.INBOUND else 'ATENDENTE'}: {message.text}"
         for message in messages
     )
+    previous_context = []
+    if conversation.analysis_summary:
+        previous_context.append(f"Resumo anterior: {conversation.analysis_summary[:600]}")
+    if conversation.buying_signals:
+        previous_context.append(
+            "Sinais anteriores: " + "; ".join(str(item)[:150] for item in conversation.buying_signals[:3])
+        )
+    if conversation.objections:
+        previous_context.append(
+            "Objeções anteriores: " + "; ".join(str(item)[:150] for item in conversation.objections[:3])
+        )
+    previous_context = "\n".join(previous_context) or "Sem análise anterior."
     prompt = f"""Analise a conversa comercial abaixo usando somente o que foi realmente dito.
 Classifique a intenção de compra:
 - hot (quente): sinais concretos de avanço, como pedir preço/proposta, pagamento, disponibilidade, prazo de contratação, demonstração ou como fechar.
@@ -293,6 +305,9 @@ Não trate cordialidade isolada como intenção de compra. Baseie cada sinal nos
 Retorne apenas JSON válido neste formato:
 {{"temperature":"hot|warm|cold","score":0,"summary":"resumo curto","buying_signals":["evidência"],"objections":["objeção"],"recommended_action":"próxima ação objetiva"}}
 O score deve ser de 0 a 100.
+
+CONTEXTO COMERCIAL ANTERIOR:
+{previous_context}
 
 CONVERSA:
 {transcript or "Sem mensagens de texto."}"""
