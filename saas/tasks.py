@@ -158,7 +158,12 @@ def answer_inbound_message(self, message_id):
         incoming.ai_status, incoming.ai_error = Message.AIStatus.PROCESSING, ""
         incoming.save(update_fields=["ai_status", "ai_error"])
         try:
-            answer = answer_with_rag(incoming.company_id, incoming.text)
+            answer = answer_with_rag(
+                incoming.company_id,
+                incoming.text,
+                conversation_id=incoming.conversation_id,
+                current_message_id=incoming.pk,
+            )
         except Exception as exc:
             incoming.ai_error = str(exc)[:2000]
             if self.request.retries >= self.max_retries:

@@ -52,6 +52,14 @@ O webhook valida o desafio GET e a assinatura POST, e usa o `wamid` como chave i
 
 Defina `GEMINI_API_KEY` e `GEMINI_CHAT_MODEL`. A busca cosseno sempre filtra `company_id` e bases ativas, podendo ainda filtrar uma base específica. O prompt exige português brasileiro, resposta objetiva e uso exclusivo do contexto.
 
+O consumo pode ser ajustado por `GEMINI_MAX_OUTPUT_TOKENS` (respostas),
+`GEMINI_ANALYSIS_MAX_OUTPUT_TOKENS` (JSON da análise comercial),
+`GEMINI_THINKING_LEVEL`, `GEMINI_HISTORY_MAX_MESSAGES`, `GEMINI_RAG_TOP_K` e
+`GEMINI_RAG_CHUNK_MAX_CHARS`. Os preços por milhão de tokens de entrada, saída
+e raciocínio são opcionais e configurados por `GEMINI_INPUT_COST_PER_MILLION`,
+`GEMINI_OUTPUT_COST_PER_MILLION` e `GEMINI_THINKING_COST_PER_MILLION`; com zero,
+os logs registram tokens e latência sem atribuir custo.
+
 Não coloque chaves no banco ou Git. Reinicie backend e worker ao alterar variáveis.
 
 ## Testes
