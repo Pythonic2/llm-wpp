@@ -1,0 +1,10 @@
+arquivo,titulo,categoria,tags,fonte,data_coleta
+01_EMPRESA_PROPOSTA_CONTATO.txt,"Dona do Chopp — empresa, proposta e contato",Institucional,"empresa; fabricante; contato; Fortaleza",https://vendas.donadochopp.com.br/,2026-11-01
+02_MODELOS_PRECOS_COMPARATIVO.txt,"Modelos, preços e comparação das chopeiras",Produtos,"modelos; preços; comparação",https://vendas.donadochopp.com.br/,2026-11-01
+03_CHOPEIRA_KIT_EXTRACAO.txt,"Chopeira + Kit Extração — conteúdo e características",Produtos,"chopeira; kit extração; CO2",https://vendas.donadochopp.com.br/produto/chopeira-kit-extracao/,2026-11-01
+04_CARRINHO_COMPLETO.txt,"Carrinho Completo — conteúdo, capacidade e dimensões",Produtos,"carrinho; praia; transporte; tonel",https://vendas.donadochopp.com.br/produto/carrinho-completo/,2026-11-01
+05_PERSONALIZACAO_FABRICACAO_ENTREGA.txt,"Personalização, fabricação, prazo e entrega","Processo de compra","personalização; fabricação; entrega; frete",https://vendas.donadochopp.com.br/,2026-11-01
+06_PAGAMENTO_GARANTIA_SUPORTE.txt,"Pagamento, garantia e suporte","Políticas comerciais","pagamento; garantia; suporte",https://vendas.donadochopp.com.br/,2026-11-01
+07_OPERACAO_E_SIMULACOES.txt,"Operação comercial e simulações de faturamento","Oportunidade de negócio","faturamento; eventos; barril; copos",https://vendas.donadochopp.com.br/#lucro,2026-11-01
+08_FAQ_CONFIRMADO.txt,"Perguntas frequentes confirmadas","Perguntas frequentes","faq; prazo; personalização; pagamento",https://vendas.donadochopp.com.br/#faq,2026-11-01
+09_PENDENCIAS_DE_CONFIRMACAO.txt,"Informações que exigem confirmação humana","Controle de qualidade","pendências; confirmar; não inventar",https://vendas.donadochopp.com.br/,2026-11-01

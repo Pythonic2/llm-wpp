@@ -1,6 +1,8 @@
+import json
 import uuid
 import logging
 from datetime import timedelta
+from pathlib import Path
 
 from django.contrib.auth import authenticate, get_user_model, login, logout
 from django.conf import settings
@@ -696,6 +698,38 @@ class KnowledgeDocumentListView(APIView):
 
     def post(self, request, company_id, base_id):
         company, base = self.get_base(request, company_id, base_id)
+        uploads = request.FILES.getlist("files")
+        if uploads:
+            try:
+                titles = json.loads(request.data.get("titles", "[]"))
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ValidationError({"titles": "Envie uma lista de títulos válida."}) from exc
+            if titles and (not isinstance(titles, list) or len(titles) != len(uploads)):
+                raise ValidationError({"titles": "Envie um título para cada arquivo."})
+
+            serializers = []
+            for index, upload in enumerate(uploads):
+                payload = {
+                    "title": str(titles[index]).strip() if titles else Path(upload.name).stem,
+                    "file": upload,
+                }
+                serializer = KnowledgeDocumentSerializer(
+                    data=payload, context={"company_id": company.pk, "knowledge_base": base}
+                )
+                serializer.is_valid(raise_exception=True)
+                serializers.append(serializer)
+
+            with transaction.atomic():
+                documents = [serializer.save() for serializer in serializers]
+                for document in documents:
+                    transaction.on_commit(
+                        lambda document_id=document.pk: process_document.delay(document_id)
+                    )
+            return Response(
+                KnowledgeDocumentSerializer(documents, many=True).data,
+                status=status.HTTP_201_CREATED,
+            )
+
         serializer = KnowledgeDocumentSerializer(
             data=request.data, context={"company_id": company.pk, "knowledge_base": base}
         )
@@ -805,6 +839,43 @@ class MediaAssetListView(APIView):
 
     def post(self, request, company_id):
         company, _ = _company_for_request(request, company_id, "admin")
+        uploads = request.FILES.getlist("files")
+        if uploads:
+            try:
+                names = json.loads(request.data.get("names", "[]"))
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ValidationError({"names": "Envie uma lista de nomes válida."}) from exc
+            if names and (not isinstance(names, list) or len(names) != len(uploads)):
+                raise ValidationError({"names": "Envie um nome para cada arquivo."})
+
+            serializers = []
+            for index, upload in enumerate(uploads):
+                payload = request.data.copy()
+                payload.pop("files", None)
+                payload.pop("names", None)
+                payload["file"] = upload
+                payload["name"] = (
+                    str(names[index]).strip() if names else Path(upload.name).stem
+                )
+                serializer = MediaAssetSerializer(
+                    data=payload, context={"request": request, "company": company}
+                )
+                serializer.is_valid(raise_exception=True)
+                serializers.append(serializer)
+
+            with transaction.atomic():
+                assets = [serializer.save() for serializer in serializers]
+                for asset in assets:
+                    transaction.on_commit(
+                        lambda asset_id=asset.pk: process_media_asset.delay(asset_id)
+                    )
+            return Response(
+                MediaAssetSerializer(
+                    assets, many=True, context={"request": request, "company": company}
+                ).data,
+                status=status.HTTP_201_CREATED,
+            )
+
         serializer = MediaAssetSerializer(
             data=request.data, context={"request": request, "company": company}
         )
