@@ -69,6 +69,9 @@ def test_media_upload_formats(delay, filename, content, mime_type, expected_type
     asset = MediaAsset.objects.get(pk=response.data["id"])
     assert asset.file_type == expected_type
     assert asset.file.name.startswith(f"companies/{tenant_data['company'].pk}/media/")
+    assert response.data["download_url"] == (
+        f"/api/v1/companies/{tenant_data['company'].pk}/media-assets/{asset.pk}/download/"
+    )
     delay.assert_called_once_with(asset.pk)
 
 

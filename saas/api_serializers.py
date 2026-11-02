@@ -290,9 +290,10 @@ class MediaAssetSerializer(serializers.ModelSerializer):
         )
 
     def get_download_url(self, obj):
-        request = self.context.get("request")
-        path = f"/api/v1/companies/{obj.company_id}/media-assets/{obj.pk}/download/"
-        return request.build_absolute_uri(path) if request else path
+        # Keep the URL on the caller's origin. An absolute URI here can expose
+        # the reverse proxy's internal host and make browsers bypass the
+        # frontend proxy that owns authentication and routing.
+        return f"/api/v1/companies/{obj.company_id}/media-assets/{obj.pk}/download/"
 
     def validate_category(self, value):
         company = self.context["company"]
