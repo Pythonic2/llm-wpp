@@ -65,7 +65,7 @@ DATABASES = {
             "sslmode": os.getenv("DB_SSLMODE", "require"),
             "channel_binding": os.getenv("DB_CHANNEL_BINDING", "require"),
             "connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT", "10")),
-            "options": f"-c search_path={DB_SCHEMA},public",
+            "options": f"-c search_path={DB_SCHEMA}",
         },
     }
 }
