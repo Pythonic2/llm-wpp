@@ -99,6 +99,7 @@ class Conversation(models.Model):
     recommended_action = models.CharField(max_length=500, blank=True)
     analyzed_at = models.DateTimeField(null=True, blank=True)
     hot_lead_notified_at = models.DateTimeField(null=True, blank=True)
+    hot_lead_notification_message_id = models.CharField(max_length=128, blank=True)
     opportunity_status = models.CharField(
         max_length=12, choices=OpportunityStatus.choices, default=OpportunityStatus.OPEN
     )

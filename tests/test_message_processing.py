@@ -85,7 +85,7 @@ def test_sales_analysis_updates_follow_up(analysis, tenant_data):
 
 @patch("saas.tasks.notify_hot_lead.delay")
 @patch("saas.tasks.analyze_sales_conversation")
-def test_hot_lead_notification_is_optional_and_only_queued_on_transition(
+def test_hot_lead_notification_is_queued_until_delivery_is_confirmed(
     analysis, notify, tenant_data, django_capture_on_commit_callbacks
 ):
     tenant_data["company"].hot_lead_notifications_enabled = True
@@ -105,14 +105,14 @@ def test_hot_lead_notification_is_optional_and_only_queued_on_transition(
     with django_capture_on_commit_callbacks(execute=True):
         analyze_conversation.run(tenant_data["conversation"].pk)
     tenant_data["conversation"].refresh_from_db()
-    assert tenant_data["conversation"].hot_lead_notified_at is not None
+    assert tenant_data["conversation"].hot_lead_notified_at is None
     notify.assert_called_once_with(tenant_data["conversation"].pk)
 
     with django_capture_on_commit_callbacks(execute=True):
         analyze_conversation.run(tenant_data["conversation"].pk)
     tenant_data["conversation"].refresh_from_db()
-    assert tenant_data["conversation"].hot_lead_notified_at is not None
-    assert notify.call_count == 1
+    assert tenant_data["conversation"].hot_lead_notified_at is None
+    assert notify.call_count == 2
 
 
 @patch("saas.tasks.send_whatsapp_text", return_value="wamid.alert")
@@ -134,6 +134,9 @@ def test_hot_lead_notification_contains_conversation_summary(send, tenant_data):
 
     notify_hot_lead.run(conversation.pk)
 
+    conversation.refresh_from_db()
+    assert conversation.hot_lead_notified_at is not None
+    assert conversation.hot_lead_notification_message_id == "wamid.alert"
     assert send.call_args.args[1] == "5511999990000"
     assert "Novo lead quente" in send.call_args.args[2]
     assert "Cliente quer receber uma proposta hoje." in send.call_args.args[2]

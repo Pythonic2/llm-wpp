@@ -29,10 +29,6 @@ def analyze_conversation(conversation_id):
     analysis = analyze_sales_conversation(conversation_id)
     with transaction.atomic():
         conversation = Conversation.objects.select_for_update().select_related("company").get(pk=conversation_id)
-        became_hot = (
-            conversation.lead_temperature != Conversation.LeadTemperature.HOT
-            and analysis["temperature"] == Conversation.LeadTemperature.HOT
-        )
         conversation.lead_temperature = analysis["temperature"]
         conversation.purchase_intent_score = analysis["score"]
         conversation.analysis_summary = analysis["summary"]
@@ -40,14 +36,16 @@ def analyze_conversation(conversation_id):
         conversation.objections = analysis["objections"]
         conversation.recommended_action = analysis["recommended_action"]
         conversation.analyzed_at = timezone.now()
+        should_notify_hot_lead = False
         if analysis["temperature"] != Conversation.LeadTemperature.HOT:
             conversation.hot_lead_notified_at = None
+            conversation.hot_lead_notification_message_id = ""
         elif (
-            became_hot
+            not conversation.hot_lead_notification_message_id
             and conversation.company.hot_lead_notifications_enabled
             and conversation.company.hot_lead_notification_phone
         ):
-            conversation.hot_lead_notified_at = timezone.now()
+            should_notify_hot_lead = True
         if conversation.opportunity_status == Conversation.OpportunityStatus.OPEN:
             delays = {
                 Conversation.LeadTemperature.HOT: timedelta(days=1),
@@ -61,9 +59,10 @@ def analyze_conversation(conversation_id):
                 "lead_temperature", "purchase_intent_score", "analysis_summary", "buying_signals",
                 "objections", "recommended_action", "analyzed_at", "next_follow_up_at",
                 "follow_up_completed_at", "hot_lead_notified_at",
+                "hot_lead_notification_message_id",
             ]
         )
-        if became_hot and conversation.hot_lead_notified_at:
+        if should_notify_hot_lead:
             transaction.on_commit(lambda: notify_hot_lead.delay(conversation.pk))
 
 
@@ -98,10 +97,14 @@ def notify_hot_lead(conversation_id):
         or not company.hot_lead_notification_phone
     ):
         return
-    send_whatsapp_text(
+    external_id = send_whatsapp_text(
         conversation.whatsapp_number,
         company.hot_lead_notification_phone,
         _hot_lead_notification_text(conversation),
+    )
+    Conversation.objects.filter(pk=conversation.pk).update(
+        hot_lead_notified_at=timezone.now(),
+        hot_lead_notification_message_id=external_id,
     )
 
 
