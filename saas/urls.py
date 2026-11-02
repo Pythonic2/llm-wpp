@@ -17,6 +17,11 @@ from .api import (
     KnowledgeDocumentDetailView,
     KnowledgeDocumentListView,
     KnowledgeDocumentReprocessView,
+    MediaAssetDetailView,
+    MediaAssetDownloadView,
+    MediaAssetListView,
+    MediaCategoryDetailView,
+    MediaCategoryListView,
     LoginView,
     LogoutView,
     MeView,
@@ -122,5 +127,30 @@ urlpatterns = [
         "v1/companies/<uuid:company_id>/knowledge-bases/<int:base_id>/documents/<int:document_id>/reprocess/",
         KnowledgeDocumentReprocessView.as_view(),
         name="api-knowledge-document-reprocess",
+    ),
+    path(
+        "v1/companies/<uuid:company_id>/media-categories/",
+        MediaCategoryListView.as_view(),
+        name="api-media-categories",
+    ),
+    path(
+        "v1/companies/<uuid:company_id>/media-categories/<int:category_id>/",
+        MediaCategoryDetailView.as_view(),
+        name="api-media-category",
+    ),
+    path(
+        "v1/companies/<uuid:company_id>/media-assets/",
+        MediaAssetListView.as_view(),
+        name="api-media-assets",
+    ),
+    path(
+        "v1/companies/<uuid:company_id>/media-assets/<uuid:asset_id>/",
+        MediaAssetDetailView.as_view(),
+        name="api-media-asset",
+    ),
+    path(
+        "v1/companies/<uuid:company_id>/media-assets/<uuid:asset_id>/download/",
+        MediaAssetDownloadView.as_view(),
+        name="api-media-asset-download",
     ),
 ]

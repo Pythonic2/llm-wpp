@@ -34,6 +34,12 @@ def whatsapp_webhook(request):
             value = change.get("value", {})
             number = WhatsAppNumber.objects.filter(phone_number_id=value.get("metadata", {}).get("phone_number_id"), is_active=True).first()
             if not number: continue
+            for status_item in value.get("statuses", []):
+                message_status = status_item.get("status")
+                if message_status in {Message.Status.SENT, Message.Status.DELIVERED, Message.Status.READ, Message.Status.FAILED}:
+                    Message.objects.filter(
+                        company=number.company, external_id=status_item.get("id", "")
+                    ).update(status=message_status, raw_payload=status_item)
             profiles = {item.get("wa_id"): item.get("profile", {}).get("name", "") for item in value.get("contacts", [])}
             for item in value.get("messages", []):
                 external_id, wa_id = item.get("id"), item.get("from")
@@ -42,11 +48,12 @@ def whatsapp_webhook(request):
                     contact, _ = Contact.objects.update_or_create(company=number.company, wa_id=wa_id, defaults={"name": profiles.get(wa_id, ""), "phone": wa_id})
                     conversation, _ = Conversation.objects.get_or_create(company=number.company, whatsapp_number=number, contact=contact)
                     message_type = item.get("type", "unknown")
-                    ai_status = Message.AIStatus.QUEUED if message_type == "text" else Message.AIStatus.SKIPPED
-                    message, created = Message.objects.get_or_create(external_id=external_id, defaults={"company": number.company, "conversation": conversation, "direction": Message.Direction.INBOUND, "message_type": message_type, "text": item.get("text", {}).get("body", ""), "raw_payload": item, "ai_status": ai_status})
+                    ai_status = Message.AIStatus.QUEUED if message_type in {"text", "audio"} else Message.AIStatus.SKIPPED
+                    message, created = Message.objects.get_or_create(external_id=external_id, defaults={"company": number.company, "conversation": conversation, "direction": Message.Direction.INBOUND, "message_type": message_type, "text": item.get("text", {}).get("body", ""), "source_media_id": item.get("audio", {}).get("id", ""), "raw_payload": item, "ai_status": ai_status})
                     if created:
                         conversation.last_message_at = timezone.now()
                         conversation.save(update_fields=["last_message_at"])
                         transaction.on_commit(lambda pk=message.pk: answer_inbound_message.delay(pk))
-                        transaction.on_commit(lambda pk=conversation.pk: analyze_conversation.delay(pk))
+                        if message_type == "text":
+                            transaction.on_commit(lambda pk=conversation.pk: analyze_conversation.delay(pk))
     return JsonResponse({"status": "ok"})

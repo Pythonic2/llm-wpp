@@ -7,6 +7,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import Q
+from django.http import FileResponse
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_protect, ensure_csrf_cookie
@@ -26,6 +27,8 @@ from .api_serializers import (
     ConversationSerializer,
     KnowledgeBaseSerializer,
     KnowledgeDocumentSerializer,
+    MediaAssetSerializer,
+    MediaCategorySerializer,
     MembershipSerializer,
     MessageSerializer,
     UserSerializer,
@@ -37,12 +40,14 @@ from .models import (
     Conversation,
     KnowledgeBase,
     KnowledgeDocument,
+    MediaAsset,
+    MediaCategory,
     Membership,
     Message,
     WhatsAppNumber,
 )
 from .services import conversation_ai_lock, send_whatsapp_text
-from .tasks import analyze_conversation, process_document
+from .tasks import analyze_conversation, process_document, process_media_asset
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -733,3 +738,119 @@ class KnowledgeDocumentReprocessView(APIView):
         document.save(update_fields=("status", "error"))
         transaction.on_commit(lambda: process_document.delay(document.pk))
         return Response(KnowledgeDocumentSerializer(document).data, status=status.HTTP_202_ACCEPTED)
+
+
+class MediaCategoryListView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    def get(self, request, company_id):
+        company, _ = _company_for_request(request, company_id)
+        queryset = MediaCategory.objects.filter(company=company).order_by("parent_id", "name")
+        return Response(MediaCategorySerializer(queryset, many=True, context={"company": company}).data)
+
+    def post(self, request, company_id):
+        company, _ = _company_for_request(request, company_id, "admin")
+        serializer = MediaCategorySerializer(data=request.data, context={"company": company})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class MediaCategoryDetailView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    def get_object(self, request, company_id, category_id):
+        company, _ = _company_for_request(request, company_id, "admin")
+        return company, generics.get_object_or_404(MediaCategory, company=company, pk=category_id)
+
+    def patch(self, request, company_id, category_id):
+        company, category = self.get_object(request, company_id, category_id)
+        serializer = MediaCategorySerializer(
+            category, data=request.data, partial=True, context={"company": company}
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    def delete(self, request, company_id, category_id):
+        _, category = self.get_object(request, company_id, category_id)
+        if category.children.exists() or category.assets.exists():
+            raise ValidationError("Remova ou mova os itens desta categoria antes de excluí-la.")
+        category.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class MediaAssetListView(APIView):
+    permission_classes = (IsAuthenticated,)
+    parser_classes = (MultiPartParser, FormParser, JSONParser)
+
+    def get(self, request, company_id):
+        company, _ = _company_for_request(request, company_id)
+        queryset = MediaAsset.objects.filter(company=company).select_related("category")
+        query = request.query_params.get("q", "").strip()
+        if query:
+            queryset = queryset.filter(
+                Q(name__icontains=query) | Q(description__icontains=query)
+                | Q(search_text__icontains=query) | Q(product_service__icontains=query)
+                | Q(tags__contains=[query]) | Q(keywords__contains=[query])
+            )
+        if request.query_params.get("category"):
+            queryset = queryset.filter(category_id=request.query_params["category"])
+        if request.query_params.get("file_type"):
+            queryset = queryset.filter(file_type=request.query_params["file_type"])
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(queryset.order_by("-created_at"), request, view=self)
+        serializer = MediaAssetSerializer(page, many=True, context={"request": request, "company": company})
+        return paginator.get_paginated_response(serializer.data)
+
+    def post(self, request, company_id):
+        company, _ = _company_for_request(request, company_id, "admin")
+        serializer = MediaAssetSerializer(
+            data=request.data, context={"request": request, "company": company}
+        )
+        serializer.is_valid(raise_exception=True)
+        asset = serializer.save()
+        transaction.on_commit(lambda: process_media_asset.delay(asset.pk))
+        return Response(
+            MediaAssetSerializer(asset, context={"request": request, "company": company}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class MediaAssetDetailView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    def get_object(self, request, company_id, asset_id, minimum_role="agent"):
+        company, _ = _company_for_request(request, company_id, minimum_role)
+        return company, generics.get_object_or_404(MediaAsset, company=company, pk=asset_id)
+
+    def get(self, request, company_id, asset_id):
+        company, asset = self.get_object(request, company_id, asset_id)
+        return Response(MediaAssetSerializer(asset, context={"request": request, "company": company}).data)
+
+    def patch(self, request, company_id, asset_id):
+        company, asset = self.get_object(request, company_id, asset_id, "admin")
+        serializer = MediaAssetSerializer(
+            asset, data=request.data, partial=True, context={"request": request, "company": company}
+        )
+        serializer.is_valid(raise_exception=True)
+        asset = serializer.save(status=MediaAsset.Status.PENDING, error="")
+        transaction.on_commit(lambda: process_media_asset.delay(asset.pk))
+        return Response(serializer.data)
+
+    def delete(self, request, company_id, asset_id):
+        _, asset = self.get_object(request, company_id, asset_id, "admin")
+        asset.file.delete(save=False)
+        asset.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class MediaAssetDownloadView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    def get(self, request, company_id, asset_id):
+        _, asset = MediaAssetDetailView().get_object(request, company_id, asset_id)
+        response = FileResponse(asset.file.open("rb"), content_type=asset.mime_type)
+        response["Content-Disposition"] = f'inline; filename="{asset.name.replace(chr(34), "")}"'
+        response["Cache-Control"] = "private, no-store"
+        return response

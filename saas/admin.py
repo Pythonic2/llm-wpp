@@ -2,8 +2,8 @@ from django.contrib import admin
 from django.db import transaction
 from django.utils import timezone
 
-from .models import Company, Contact, Conversation, KnowledgeBase, KnowledgeChunk, KnowledgeDocument, Membership, Message, WhatsAppNumber
-from .tasks import process_document
+from .models import Company, Contact, Conversation, KnowledgeBase, KnowledgeChunk, KnowledgeDocument, MediaAsset, MediaCategory, Membership, Message, WhatsAppNumber
+from .tasks import process_document, process_media_asset
 
 
 class TenantAdmin(admin.ModelAdmin):
@@ -87,3 +87,22 @@ class KnowledgeChunkAdmin(TenantAdmin):
     list_display = ("document", "position", "company")
     readonly_fields = ("company", "knowledge_base", "document", "position", "content", "embedding", "created_at")
     def has_add_permission(self, request): return False
+
+
+@admin.register(MediaCategory)
+class MediaCategoryAdmin(TenantAdmin):
+    list_display = ("name", "company", "parent", "updated_at")
+    search_fields = ("name",)
+
+
+@admin.register(MediaAsset)
+class MediaAssetAdmin(TenantAdmin):
+    list_display = ("name", "company", "file_type", "status", "is_active", "allow_ai_send", "updated_at")
+    list_filter = ("file_type", "status", "is_active", "allow_ai_send")
+    search_fields = ("name", "description", "product_service", "search_text")
+    readonly_fields = ("mime_type", "size", "status", "error", "embedding", "meta_media_id", "meta_media_status")
+
+    def save_model(self, request, obj, form, change):
+        super().save_model(request, obj, form, change)
+        if not change or any(field in form.changed_data for field in ("name", "description", "tags", "keywords", "product_service", "search_text")):
+            transaction.on_commit(lambda: process_media_asset.delay(obj.pk))

@@ -62,6 +62,39 @@ os logs registram tokens e latência sem atribuir custo.
 
 Não coloque chaves no banco ou Git. Reinicie backend e worker ao alterar variáveis.
 
+## Biblioteca de mídias e áudio
+
+A API permite categorias hierárquicas e upload privado de imagens JPEG/PNG/WebP/GIF,
+vídeos MP4/3GPP e PDFs. Os arquivos são indexados pelos metadados com os embeddings
+existentes. Quando o cliente pede foto, vídeo, catálogo, PDF, manual ou tutorial, o
+backend pesquisa apenas as mídias ativas e autorizadas da empresa, oferece até
+`MEDIA_SEARCH_TOP_K` candidatos ao Gemini e só aceita um ID real dessa lista. O envio
+é feito pela Cloud API, reaproveita o ID da Meta e registra uma mensagem idempotente.
+
+Áudios recebidos são baixados exclusivamente da URL HTTPS retornada pela Meta,
+limitados por `WHATSAPP_AUDIO_MAX_BYTES`, transcritos pelo `GEMINI_AUDIO_MODEL` e
+encaminhados ao fluxo normal de RAG. O áudio não é persistido; somente a transcrição
+fica no histórico.
+
+Por padrão, o storage local existente continua funcionando. Para usar um bucket GCS
+privado, instale as dependências do lock, forneça credenciais por Application Default
+Credentials e configure:
+
+```env
+GCS_BUCKET_NAME=meu-bucket-privado
+GCS_SIGNED_URL_EXPIRATION=300
+GEMINI_AUDIO_MODEL=
+GEMINI_AUDIO_MAX_OUTPUT_TOKENS=1000
+WHATSAPP_AUDIO_MAX_BYTES=20971520
+MEDIA_LIBRARY_MAX_BYTES=16777216
+MEDIA_SEARCH_TOP_K=5
+```
+
+`GEMINI_AUDIO_MODEL` vazio reutiliza `GEMINI_CHAT_MODEL`. O bucket deve manter
+Public Access Prevention habilitado e a conta da aplicação precisa apenas das
+permissões de leitura, criação e exclusão de objetos. Downloads do CRM passam por
+endpoint autenticado e não expõem o caminho interno no JSON.
+
 ## Testes
 
 Os testes de integração usam PostgreSQL/pgvector e mocks para Gemini e WhatsApp:

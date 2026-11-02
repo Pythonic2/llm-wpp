@@ -4,15 +4,19 @@ from django.utils import timezone
 from datetime import timedelta
 from redis.exceptions import LockError
 
-from .models import Conversation, KnowledgeChunk, KnowledgeDocument, Message
+from .models import Conversation, KnowledgeChunk, KnowledgeDocument, MediaAsset, Message
 from .services import (
     answer_with_rag,
     analyze_sales_conversation,
     conversation_ai_lock,
+    download_whatsapp_audio,
     embed_texts,
     extract_text,
+    select_media_for_question,
+    send_whatsapp_media,
     send_whatsapp_text,
     split_text,
+    transcribe_audio,
 )
 
 
@@ -117,6 +121,77 @@ def process_document(document_id):
         raise
 
 
+@shared_task(autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
+def process_media_asset(asset_id):
+    asset = MediaAsset.objects.get(pk=asset_id)
+    try:
+        semantic_text = "\n".join(
+            part for part in (
+                asset.name,
+                asset.description,
+                asset.product_service,
+                " ".join(asset.tags),
+                " ".join(asset.keywords),
+                asset.search_text,
+            ) if part
+        )[:8000]
+        asset.embedding = embed_texts([semantic_text], "RETRIEVAL_DOCUMENT")[0]
+        asset.status = MediaAsset.Status.READY
+        asset.error = ""
+        asset.save(update_fields=("embedding", "status", "error", "updated_at"))
+    except Exception as exc:
+        asset.status = MediaAsset.Status.FAILED
+        asset.error = str(exc)[:2000]
+        asset.save(update_fields=("status", "error", "updated_at"))
+        raise
+
+
+@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
+def send_selected_media(self, incoming_message_id, asset_id):
+    incoming = Message.objects.select_related(
+        "conversation__whatsapp_number", "conversation__contact"
+    ).get(pk=incoming_message_id)
+    asset = MediaAsset.objects.get(pk=asset_id, company_id=incoming.company_id)
+    if Message.objects.filter(
+        conversation_id=incoming.conversation_id,
+        media_asset=asset,
+        status=Message.Status.SENT,
+        created_at__gte=timezone.now() - timedelta(hours=24),
+    ).exists():
+        return
+    key = f"ai-media:{incoming.pk}:{asset.pk}"
+    outgoing, _ = Message.objects.get_or_create(
+        idempotency_key=key,
+        defaults={
+            "external_id": f"media-pending:{incoming.pk}:{asset.pk}",
+            "company_id": incoming.company_id,
+            "conversation_id": incoming.conversation_id,
+            "direction": Message.Direction.OUTBOUND,
+            "message_type": asset.file_type,
+            "text": asset.name,
+            "status": Message.Status.PENDING,
+            "media_asset": asset,
+        },
+    )
+    if outgoing.status == Message.Status.SENT:
+        return
+    try:
+        external_id = send_whatsapp_media(
+            incoming.conversation.whatsapp_number,
+            incoming.conversation.contact.wa_id,
+            asset,
+        )
+    except Exception as exc:
+        outgoing.status = Message.Status.FAILED
+        outgoing.raw_payload = {"error": str(exc)[:2000]}
+        outgoing.save(update_fields=("status", "raw_payload"))
+        raise
+    outgoing.external_id = external_id
+    outgoing.status = Message.Status.SENT
+    outgoing.raw_payload = {}
+    outgoing.save(update_fields=("external_id", "status", "raw_payload"))
+
+
 @shared_task(bind=True, max_retries=120)
 def answer_inbound_message(self, message_id):
     incoming = Message.objects.select_related("conversation__whatsapp_number", "conversation__contact").get(pk=message_id)
@@ -143,7 +218,7 @@ def answer_inbound_message(self, message_id):
             raise self.retry(countdown=2)
 
         conversation, number = incoming.conversation, incoming.conversation.whatsapp_number
-        if conversation.ai_paused or not number.ai_enabled or not number.is_active or incoming.message_type != "text":
+        if conversation.ai_paused or not number.ai_enabled or not number.is_active or incoming.message_type not in {"text", "audio"}:
             incoming.ai_status = Message.AIStatus.SKIPPED
             incoming.save(update_fields=["ai_status"])
             return
@@ -158,12 +233,24 @@ def answer_inbound_message(self, message_id):
         incoming.ai_status, incoming.ai_error = Message.AIStatus.PROCESSING, ""
         incoming.save(update_fields=["ai_status", "ai_error"])
         try:
-            answer = answer_with_rag(
-                incoming.company_id,
-                incoming.text,
-                conversation_id=incoming.conversation_id,
-                current_message_id=incoming.pk,
-            )
+            answer = ""
+            if incoming.message_type == "audio" and not incoming.transcription:
+                try:
+                    source_media_id = incoming.source_media_id or incoming.raw_payload.get("audio", {}).get("id", "")
+                    audio_data, mime_type = download_whatsapp_audio(source_media_id)
+                    incoming.transcription = transcribe_audio(audio_data, mime_type)
+                    incoming.text = incoming.transcription
+                    incoming.source_media_id = source_media_id
+                    incoming.save(update_fields=("transcription", "text", "source_media_id"))
+                except ValueError:
+                    answer = "Desculpe, não consegui compreender esse áudio. Pode enviar novamente ou escrever sua mensagem?"
+            if not answer:
+                answer = answer_with_rag(
+                    incoming.company_id,
+                    incoming.text,
+                    conversation_id=incoming.conversation_id,
+                    current_message_id=incoming.pk,
+                )
         except Exception as exc:
             incoming.ai_error = str(exc)[:2000]
             if self.request.retries >= self.max_retries:
@@ -221,6 +308,14 @@ def answer_inbound_message(self, message_id):
         conversation.save(update_fields=["last_message_at"])
         incoming.ai_status, incoming.ai_error = Message.AIStatus.COMPLETED, ""
         incoming.save(update_fields=["ai_status", "ai_error"])
+        try:
+            selected_media = select_media_for_question(incoming.company_id, incoming.text)
+        except Exception:
+            selected_media = None
+        if selected_media:
+            send_selected_media.delay(incoming.pk, selected_media.pk)
+        if incoming.message_type == "audio":
+            analyze_conversation.delay(incoming.conversation_id)
     finally:
         try:
             lock.release()

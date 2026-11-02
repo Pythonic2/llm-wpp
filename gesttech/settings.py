@@ -66,6 +66,18 @@ STORAGES = {
     "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
     "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
 }
+GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "").strip()
+if GCS_BUCKET_NAME:
+    STORAGES["default"] = {
+        "BACKEND": "storages.backends.gcloud.GoogleCloudStorage",
+        "OPTIONS": {
+            "bucket_name": GCS_BUCKET_NAME,
+            "default_acl": None,
+            "querystring_auth": True,
+            "expiration": int(os.getenv("GCS_SIGNED_URL_EXPIRATION", "300")),
+            "file_overwrite": False,
+        },
+    }
 MEDIA_URL = "media/"
 MEDIA_ROOT = BASE_DIR / "media"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
@@ -95,6 +107,11 @@ GEMINI_RAG_CHUNK_MAX_CHARS = int(os.getenv("GEMINI_RAG_CHUNK_MAX_CHARS", "1200")
 GEMINI_INPUT_COST_PER_MILLION = float(os.getenv("GEMINI_INPUT_COST_PER_MILLION", "0"))
 GEMINI_OUTPUT_COST_PER_MILLION = float(os.getenv("GEMINI_OUTPUT_COST_PER_MILLION", "0"))
 GEMINI_THINKING_COST_PER_MILLION = float(os.getenv("GEMINI_THINKING_COST_PER_MILLION", "0"))
+GEMINI_AUDIO_MODEL = os.getenv("GEMINI_AUDIO_MODEL", "").strip() or GEMINI_CHAT_MODEL
+GEMINI_AUDIO_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_AUDIO_MAX_OUTPUT_TOKENS", "1000"))
+WHATSAPP_AUDIO_MAX_BYTES = int(os.getenv("WHATSAPP_AUDIO_MAX_BYTES", str(20 * 1024 * 1024)))
+MEDIA_LIBRARY_MAX_BYTES = int(os.getenv("MEDIA_LIBRARY_MAX_BYTES", str(16 * 1024 * 1024)))
+MEDIA_SEARCH_TOP_K = int(os.getenv("MEDIA_SEARCH_TOP_K", "5"))
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "")
 WHATSAPP_APP_SECRET = os.getenv("WHATSAPP_APP_SECRET", "")
 WHATSAPP_API_VERSION = os.getenv("WHATSAPP_API_VERSION", "v26.0")

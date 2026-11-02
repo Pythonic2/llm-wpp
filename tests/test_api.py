@@ -8,6 +8,8 @@ from saas.models import (
     Contact,
     KnowledgeBase,
     KnowledgeDocument,
+    MediaAsset,
+    MediaCategory,
     Membership,
     Message,
     WhatsAppNumber,
@@ -24,6 +26,75 @@ def api_client(user):
 
 def company_url(company_id, path=""):
     return f"/api/v1/companies/{company_id}/{path}"
+
+
+def media_payload(filename, content, content_type):
+    return {
+        "name": filename,
+        "description": "Material útil para apresentar o produto ao cliente.",
+        "tags": '["produto", "apresentação"]',
+        "keywords": '["material"]',
+        "search_text": "Material comercial do produto",
+        "allow_ai_send": True,
+        "file": SimpleUploadedFile(filename, content, content_type=content_type),
+    }
+
+
+def test_admin_can_manage_media_category(tenant_data):
+    client = api_client(tenant_data["user"])
+    url = company_url(tenant_data["company"].pk, "media-categories/")
+    response = client.post(url, {"name": "Catálogos"}, format="json")
+    assert response.status_code == 201
+    assert MediaCategory.objects.filter(company=tenant_data["company"], name="Catálogos").exists()
+
+
+@pytest.mark.parametrize(
+    ("filename", "content", "mime_type", "expected_type"),
+    [
+        ("produto.png", b"\x89PNG\r\n\x1a\n" + b"x" * 20, "image/png", "image"),
+        ("tutorial.mp4", b"\x00\x00\x00\x18ftypmp42" + b"x" * 20, "video/mp4", "video"),
+        ("catalogo.pdf", b"%PDF-1.7\n" + b"x" * 20, "application/pdf", "document"),
+    ],
+)
+@patch("saas.api.process_media_asset.delay")
+def test_media_upload_formats(delay, filename, content, mime_type, expected_type, tenant_data, django_capture_on_commit_callbacks):
+    client = api_client(tenant_data["user"])
+    with django_capture_on_commit_callbacks(execute=True):
+        response = client.post(
+            company_url(tenant_data["company"].pk, "media-assets/"),
+            media_payload(filename, content, mime_type),
+            format="multipart",
+        )
+    assert response.status_code == 201, response.data
+    asset = MediaAsset.objects.get(pk=response.data["id"])
+    assert asset.file_type == expected_type
+    assert asset.file.name.startswith(f"companies/{tenant_data['company'].pk}/media/")
+    delay.assert_called_once_with(asset.pk)
+
+
+def test_media_upload_rejects_oversized_file(settings, tenant_data):
+    settings.MEDIA_LIBRARY_MAX_BYTES = 8
+    response = api_client(tenant_data["user"]).post(
+        company_url(tenant_data["company"].pk, "media-assets/"),
+        media_payload("large.pdf", b"%PDF-1.7 too large", "application/pdf"),
+        format="multipart",
+    )
+    assert response.status_code == 400
+
+
+@patch("saas.api.process_media_asset.delay")
+def test_media_asset_is_tenant_isolated(delay, tenant_data, django_capture_on_commit_callbacks):
+    with django_capture_on_commit_callbacks(execute=True):
+        response = api_client(tenant_data["user"]).post(
+            company_url(tenant_data["company"].pk, "media-assets/"),
+            media_payload("private.pdf", b"%PDF-1.7 private", "application/pdf"),
+            format="multipart",
+        )
+    asset_id = response.data["id"]
+    other = api_client(tenant_data["other"]).get(
+        company_url(tenant_data["company"].pk, f"media-assets/{asset_id}/download/")
+    )
+    assert other.status_code == 404
 
 
 def test_company_and_dashboard_are_limited_to_membership(tenant_data):

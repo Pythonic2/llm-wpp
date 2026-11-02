@@ -1,4 +1,5 @@
 from django.contrib.auth import get_user_model
+from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
@@ -8,6 +9,8 @@ from .models import (
     Conversation,
     KnowledgeBase,
     KnowledgeDocument,
+    MediaAsset,
+    MediaCategory,
     Membership,
     Message,
     WhatsAppNumber,
@@ -168,6 +171,9 @@ class MessageSerializer(serializers.ModelSerializer):
             "direction",
             "message_type",
             "text",
+            "transcription",
+            "source_media_id",
+            "media_asset",
             "status",
             "ai_status",
             "response_to",
@@ -203,6 +209,8 @@ class KnowledgeDocumentSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         if self.instance is None and not attrs.get("file"):
             raise serializers.ValidationError({"file": "Este campo é obrigatório."})
+        if self.instance is not None and attrs.get("file"):
+            raise serializers.ValidationError({"file": "Crie uma nova mídia para substituir o arquivo."})
         return attrs
 
     def create(self, validated_data):
@@ -215,3 +223,113 @@ class KnowledgeDocumentSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(exc.message_dict) from exc
         document.save()
         return document
+
+
+class MediaCategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MediaCategory
+        fields = ("id", "name", "parent", "created_at", "updated_at")
+        read_only_fields = ("id", "created_at", "updated_at")
+
+    def validate_parent(self, value):
+        company = self.context["company"]
+        if value and value.company_id != company.pk:
+            raise serializers.ValidationError("Categoria pai pertence a outra empresa.")
+        return value
+
+    def create(self, validated_data):
+        validated_data["company"] = self.context["company"]
+        return super().create(validated_data)
+
+
+MEDIA_MIME_TYPES = {
+    "image/jpeg": MediaAsset.FileType.IMAGE,
+    "image/png": MediaAsset.FileType.IMAGE,
+    "image/webp": MediaAsset.FileType.IMAGE,
+    "image/gif": MediaAsset.FileType.IMAGE,
+    "video/mp4": MediaAsset.FileType.VIDEO,
+    "video/3gpp": MediaAsset.FileType.VIDEO,
+    "application/pdf": MediaAsset.FileType.DOCUMENT,
+}
+
+
+def _sniff_media_mime(upload):
+    header = upload.read(16)
+    upload.seek(0)
+    if header.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if header[:4] == b"GIF8":
+        return "image/gif"
+    if header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        return "image/webp"
+    if header.startswith(b"%PDF-"):
+        return "application/pdf"
+    if len(header) >= 12 and header[4:8] == b"ftyp":
+        return "video/3gpp" if header[8:11] == b"3gp" else "video/mp4"
+    return ""
+
+
+class MediaAssetSerializer(serializers.ModelSerializer):
+    file = serializers.FileField(write_only=True, required=False)
+    category_name = serializers.CharField(source="category.name", read_only=True)
+    download_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MediaAsset
+        fields = (
+            "id", "name", "description", "category", "category_name", "tags", "keywords",
+            "file", "download_url", "file_type", "mime_type", "size", "product_service",
+            "search_text", "is_active", "allow_ai_send", "status", "error",
+            "meta_media_status", "created_at", "updated_at",
+        )
+        read_only_fields = (
+            "id", "download_url", "file_type", "mime_type", "size", "status", "error",
+            "meta_media_status", "created_at", "updated_at",
+        )
+
+    def get_download_url(self, obj):
+        request = self.context.get("request")
+        path = f"/api/v1/companies/{obj.company_id}/media-assets/{obj.pk}/download/"
+        return request.build_absolute_uri(path) if request else path
+
+    def validate_category(self, value):
+        company = self.context["company"]
+        if value and value.company_id != company.pk:
+            raise serializers.ValidationError("Categoria pertence a outra empresa.")
+        return value
+
+    def validate_tags(self, value):
+        if not isinstance(value, list) or len(value) > 30:
+            raise serializers.ValidationError("Informe uma lista com no máximo 30 tags.")
+        return [str(item).strip()[:80] for item in value if str(item).strip()]
+
+    validate_keywords = validate_tags
+
+    def validate_file(self, value):
+        if value.size > settings.MEDIA_LIBRARY_MAX_BYTES:
+            raise serializers.ValidationError("Arquivo maior que o limite permitido.")
+        detected = _sniff_media_mime(value)
+        declared = str(getattr(value, "content_type", "")).lower()
+        if detected not in MEDIA_MIME_TYPES or declared != detected:
+            raise serializers.ValidationError("Formato ou MIME type inválido.")
+        value.detected_mime_type = detected
+        return value
+
+    def validate(self, attrs):
+        if self.instance is None and not attrs.get("file"):
+            raise serializers.ValidationError({"file": "Este campo é obrigatório."})
+        return attrs
+
+    def create(self, validated_data):
+        upload = validated_data["file"]
+        mime_type = upload.detected_mime_type
+        validated_data.update(
+            company=self.context["company"],
+            mime_type=mime_type,
+            file_type=MEDIA_MIME_TYPES[mime_type],
+            size=upload.size,
+            status=MediaAsset.Status.PENDING,
+        )
+        return super().create(validated_data)

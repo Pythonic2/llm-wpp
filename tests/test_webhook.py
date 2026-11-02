@@ -31,3 +31,25 @@ def test_webhook_is_idempotent(delay, analyze, client, settings, tenant_data, dj
     assert Message.objects.filter(external_id="wamid.123").count() == 1
     delay.assert_called_once()
     analyze.assert_called_once()
+
+
+@patch("saas.webhooks.analyze_conversation.delay")
+@patch("saas.webhooks.answer_inbound_message.delay")
+def test_webhook_queues_audio_without_early_analysis(delay, analyze, client, settings, tenant_data, django_capture_on_commit_callbacks):
+    settings.WHATSAPP_APP_SECRET = "secret"
+    data = payload()
+    item = data["entry"][0]["changes"][0]["value"]["messages"][0]
+    item.update(id="wamid.audio", type="audio", audio={"id": "meta-audio", "mime_type": "audio/ogg"})
+    item.pop("text")
+    body = json.dumps(data).encode()
+    with django_capture_on_commit_callbacks(execute=True):
+        response = client.post(
+            reverse("whatsapp-webhook"), data=body, content_type="application/json",
+            HTTP_X_HUB_SIGNATURE_256=signature("secret", body),
+        )
+    assert response.status_code == 200
+    message = Message.objects.get(external_id="wamid.audio")
+    assert message.ai_status == Message.AIStatus.QUEUED
+    assert message.source_media_id == "meta-audio"
+    delay.assert_called_once_with(message.pk)
+    analyze.assert_not_called()

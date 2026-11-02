@@ -74,3 +74,15 @@ Upload multipart requer `title` e `file`; são aceitos `.pdf`, `.txt` e `.csv`. 
 ## Paginação e erros
 
 Listas paginadas usam o envelope DRF `{ "count": 0, "next": null, "previous": null, "results": [] }`. O parâmetro `page_size` aceita valores até 100. Empresas, membros e conversas por contato são listas diretas. Os endpoints retornam erros DRF com status HTTP apropriado; IDs de registros de outra empresa resultam em `404`, sem revelar a existência do recurso.
+## Biblioteca de mídias
+
+- `GET|POST /api/v1/companies/{company_id}/media-categories/`
+- `PATCH|DELETE /api/v1/companies/{company_id}/media-categories/{category_id}/`
+- `GET|POST /api/v1/companies/{company_id}/media-assets/`
+- `GET|PATCH|DELETE /api/v1/companies/{company_id}/media-assets/{asset_id}/`
+- `GET /api/v1/companies/{company_id}/media-assets/{asset_id}/download/`
+
+Criação e alteração exigem papel `admin`; leitura e download exigem associação à
+empresa. O upload usa `multipart/form-data`. Campos principais: `name`, `description`,
+`category`, `tags`, `keywords`, `product_service`, `search_text`, `is_active`,
+`allow_ai_send` e `file`. O download é autenticado e enviado com cache privado.

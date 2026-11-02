@@ -6,6 +6,7 @@ import re
 import time
 import unicodedata
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pymupdf
 import httpx
@@ -81,9 +82,9 @@ def retrieve_context(company_id, question, knowledge_base_id=None, limit=None):
     return list(queryset.annotate(distance=CosineDistance("embedding", vector)).order_by("distance")[:limit])
 
 
-def _thinking_config():
+def _thinking_config(model=None):
     """Return thinking configuration only for models known to support levels."""
-    if not settings.GEMINI_CHAT_MODEL.lower().startswith("gemini-3"):
+    if not (model or settings.GEMINI_CHAT_MODEL).lower().startswith("gemini-3"):
         return None
     levels = {
         "minimal": types.ThinkingLevel.MINIMAL,
@@ -95,8 +96,8 @@ def _thinking_config():
     return types.ThinkingConfig(thinking_level=level) if level else None
 
 
-def _generation_config(max_output_tokens, **kwargs):
-    thinking_config = _thinking_config()
+def _generation_config(max_output_tokens, model=None, **kwargs):
+    thinking_config = _thinking_config(model)
     if thinking_config is not None:
         kwargs["thinking_config"] = thinking_config
     return types.GenerateContentConfig(max_output_tokens=max_output_tokens, **kwargs)
@@ -107,7 +108,7 @@ def _usage_number(metadata, field):
     return value if isinstance(value, (int, float)) else 0
 
 
-def _log_gemini_usage(response, elapsed_seconds, purpose):
+def _log_gemini_usage(response, elapsed_seconds, purpose, model=None):
     metadata = getattr(response, "usage_metadata", None)
     input_tokens = _usage_number(metadata, "prompt_token_count")
     output_tokens = _usage_number(metadata, "candidates_token_count")
@@ -121,7 +122,7 @@ def _log_gemini_usage(response, elapsed_seconds, purpose):
     logger.info(
         "Gemini usage model=%s purpose=%s input_tokens=%s output_tokens=%s "
         "thinking_tokens=%s total_tokens=%s elapsed_seconds=%.3f estimated_cost_usd=%.8f",
-        settings.GEMINI_CHAT_MODEL,
+        model or settings.GEMINI_CHAT_MODEL,
         purpose,
         input_tokens,
         output_tokens,
@@ -132,15 +133,181 @@ def _log_gemini_usage(response, elapsed_seconds, purpose):
     )
 
 
-def _generate_content(client, *, contents, config, purpose):
+def _generate_content(client, *, contents, config, purpose, model=None):
+    model = model or settings.GEMINI_CHAT_MODEL
     started_at = time.monotonic()
     response = client.models.generate_content(
-        model=settings.GEMINI_CHAT_MODEL,
+        model=model,
         contents=contents,
         config=config,
     )
-    _log_gemini_usage(response, time.monotonic() - started_at, purpose)
+    _log_gemini_usage(response, time.monotonic() - started_at, purpose, model)
     return response
+
+
+def transcribe_audio(audio_data, mime_type):
+    allowed = {
+        "audio/aac", "audio/aiff", "audio/flac", "audio/l16", "audio/m4a", "audio/mp3",
+        "audio/mpeg", "audio/mulaw", "audio/ogg", "audio/opus", "audio/wav", "audio/webm",
+    }
+    mime_type = mime_type.split(";", 1)[0].strip().lower()
+    if mime_type not in allowed:
+        raise ValueError("Formato de áudio não suportado.")
+    if not audio_data or len(audio_data) > settings.WHATSAPP_AUDIO_MAX_BYTES:
+        raise ValueError("Áudio vazio ou maior que o limite permitido.")
+    response = _generate_content(
+        gemini_client(),
+        model=settings.GEMINI_AUDIO_MODEL,
+        contents=[
+            "Transcreva somente a fala deste áudio, preservando o idioma original. "
+            "Não acrescente explicações. Se não houver fala compreensível, responda INCOMPREENSIVEL.",
+            types.Part.from_bytes(data=audio_data, mime_type=mime_type),
+        ],
+        config=_generation_config(
+            settings.GEMINI_AUDIO_MAX_OUTPUT_TOKENS, model=settings.GEMINI_AUDIO_MODEL
+        ),
+        purpose="audio_transcription",
+    )
+    transcript = (response.text or "").strip()
+    if not transcript or transcript.upper() == "INCOMPREENSIVEL":
+        raise ValueError("Não foi possível compreender o áudio.")
+    return transcript
+
+
+def download_whatsapp_audio(media_id):
+    headers = {"Authorization": f"Bearer {settings.WHATSAPP_ACCESS_TOKEN}"}
+    metadata = httpx.get(
+        f"https://graph.facebook.com/{settings.WHATSAPP_API_VERSION}/{media_id}",
+        headers=headers,
+        timeout=20,
+    )
+    metadata.raise_for_status()
+    payload = metadata.json()
+    url = payload.get("url", "")
+    hostname = (urlparse(url).hostname or "").lower()
+    if not url.startswith("https://") or not any(
+        hostname == domain or hostname.endswith(f".{domain}")
+        for domain in ("facebook.com", "fbcdn.net", "fbsbx.com")
+    ):
+        raise ValueError("URL de mídia inválida retornada pela Meta.")
+    response = httpx.get(url, headers=headers, timeout=30, follow_redirects=False)
+    response.raise_for_status()
+    if len(response.content) > settings.WHATSAPP_AUDIO_MAX_BYTES:
+        raise ValueError("Áudio maior que o limite permitido.")
+    return response.content, str(payload.get("mime_type") or response.headers.get("content-type", ""))
+
+
+def search_media(company_id, query, category_id=None, product_service=None, limit=None):
+    from .models import MediaAsset
+
+    limit = min(limit or settings.MEDIA_SEARCH_TOP_K, 10)
+    vector = embed_texts([query], "RETRIEVAL_QUERY")[0]
+    queryset = MediaAsset.objects.filter(
+        company_id=company_id,
+        is_active=True,
+        allow_ai_send=True,
+        status=MediaAsset.Status.READY,
+        embedding__isnull=False,
+    )
+    if category_id:
+        queryset = queryset.filter(category_id=category_id)
+    if product_service:
+        queryset = queryset.filter(product_service__icontains=product_service)
+    return list(queryset.annotate(distance=CosineDistance("embedding", vector)).order_by("distance")[:limit])
+
+
+def select_media_for_question(company_id, question):
+    normalized = unicodedata.normalize("NFKD", question.casefold()).encode("ascii", "ignore").decode()
+    if not any(word in normalized for word in (
+        "foto", "imagem", "video", "catalogo", "pdf", "manual", "tutorial", "arquivo", "documento"
+    )):
+        return None
+    candidates = search_media(company_id, question)
+    if not candidates:
+        return None
+    candidate_data = [
+        {
+            "id": str(item.pk),
+            "name": item.name,
+            "description": item.description[:500],
+            "type": item.file_type,
+            "product_service": item.product_service,
+        }
+        for item in candidates
+    ]
+    prompt = (
+        "Escolha no máximo uma mídia que responda diretamente ao pedido. "
+        "Use somente um ID fornecido. Se nenhuma for adequada, use null.\n"
+        f"PEDIDO: {question}\nCANDIDATOS: {json.dumps(candidate_data, ensure_ascii=False)}"
+    )
+    response = _generate_content(
+        gemini_client(),
+        contents=prompt,
+        config=_generation_config(
+            100,
+            response_mime_type="application/json",
+            response_schema={
+                "type": "object",
+                "properties": {"media_id": {"anyOf": [{"type": "string"}, {"type": "null"}]}},
+                "required": ["media_id"],
+            },
+        ),
+        purpose="media_selection",
+    )
+    selected_id = json.loads(response.text or "{}").get("media_id")
+    return next((item for item in candidates if str(item.pk) == selected_id), None)
+
+
+def upload_media_to_meta(number, asset):
+    url = f"https://graph.facebook.com/{settings.WHATSAPP_API_VERSION}/{number.phone_number_id}/media"
+    headers = {"Authorization": f"Bearer {settings.WHATSAPP_ACCESS_TOKEN}"}
+    with asset.file.open("rb") as source:
+        response = httpx.post(
+            url,
+            headers=headers,
+            data={"messaging_product": "whatsapp", "type": asset.mime_type},
+            files={"file": (asset.file.name.rsplit("/", 1)[-1], source, asset.mime_type)},
+            timeout=60,
+        )
+    response.raise_for_status()
+    return response.json()["id"]
+
+
+def send_whatsapp_media(number, recipient, asset, caption=""):
+    from django.utils import timezone
+    from .models import MediaAsset
+
+    if asset.company_id != number.company_id or not asset.is_active or not asset.allow_ai_send:
+        raise ValueError("Mídia não autorizada para esta empresa.")
+    media_id = asset.meta_media_id if asset.meta_media_status == MediaAsset.MetaMediaStatus.VALID else ""
+    if not media_id:
+        media_id = upload_media_to_meta(number, asset)
+        asset.meta_media_id = media_id
+        asset.meta_media_status = MediaAsset.MetaMediaStatus.VALID
+        asset.meta_media_updated_at = timezone.now()
+        asset.save(update_fields=("meta_media_id", "meta_media_status", "meta_media_updated_at"))
+    media_type = "document" if asset.file_type == MediaAsset.FileType.DOCUMENT else asset.file_type
+    media_payload = {"id": media_id}
+    if caption:
+        media_payload["caption"] = caption[:1024]
+    if media_type == "document":
+        media_payload["filename"] = asset.name[:240]
+    response = httpx.post(
+        f"https://graph.facebook.com/{settings.WHATSAPP_API_VERSION}/{number.phone_number_id}/messages",
+        headers={"Authorization": f"Bearer {settings.WHATSAPP_ACCESS_TOKEN}"},
+        json={
+            "messaging_product": "whatsapp",
+            "to": recipient,
+            "type": media_type,
+            media_type: media_payload,
+        },
+        timeout=20,
+    )
+    if response.status_code >= 400 and asset.meta_media_id:
+        asset.meta_media_status = MediaAsset.MetaMediaStatus.EXPIRED
+        asset.save(update_fields=("meta_media_status",))
+    response.raise_for_status()
+    return response.json()["messages"][0]["id"]
 
 
 def greeting_response(question):

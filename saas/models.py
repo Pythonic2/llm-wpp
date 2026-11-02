@@ -3,6 +3,8 @@ import uuid
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.db.models.signals import post_save
+from django.dispatch import receiver
 from pgvector.django import VectorField
 
 
@@ -145,6 +147,11 @@ class Message(models.Model):
     ai_status = models.CharField(max_length=16, choices=AIStatus.choices, default=AIStatus.NOT_APPLICABLE)
     ai_error = models.TextField(blank=True)
     response_to = models.OneToOneField("self", null=True, blank=True, on_delete=models.SET_NULL, related_name="ai_response")
+    media_asset = models.ForeignKey(
+        "MediaAsset", null=True, blank=True, on_delete=models.SET_NULL, related_name="messages"
+    )
+    source_media_id = models.CharField(max_length=128, blank=True)
+    transcription = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def clean(self):
@@ -194,3 +201,104 @@ class KnowledgeChunk(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     class Meta:
         constraints = [models.UniqueConstraint(fields=["document", "position"], name="unique_document_chunk_position")]
+
+
+def media_upload_path(instance, filename):
+    suffix = filename.rsplit(".", 1)[-1].lower() if "." in filename else "bin"
+    return f"companies/{instance.company_id}/media/{uuid.uuid4()}.{suffix}"
+
+
+class MediaCategory(models.Model):
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="media_categories")
+    name = models.CharField(max_length=120)
+    parent = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT, related_name="children"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "parent", "name"],
+                name="unique_company_media_category",
+                nulls_distinct=False,
+            )
+        ]
+
+    def clean(self):
+        if self.parent_id and self.parent.company_id != self.company_id:
+            raise ValidationError("Categoria pai pertence a outra empresa.")
+        if self.parent_id and self.parent_id == self.pk:
+            raise ValidationError("Uma categoria não pode ser pai dela mesma.")
+
+    def __str__(self):
+        return f"{self.name} — {self.company}"
+
+
+class MediaAsset(models.Model):
+    class FileType(models.TextChoices):
+        IMAGE = "image", "Imagem"
+        VIDEO = "video", "Vídeo"
+        DOCUMENT = "document", "Documento"
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pendente"
+        READY = "ready", "Pronto"
+        FAILED = "failed", "Falhou"
+
+    class MetaMediaStatus(models.TextChoices):
+        MISSING = "missing", "Não enviado"
+        VALID = "valid", "Válido"
+        EXPIRED = "expired", "Expirado"
+        FAILED = "failed", "Falhou"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="media_assets")
+    name = models.CharField(max_length=200)
+    description = models.TextField(max_length=4000)
+    category = models.ForeignKey(
+        MediaCategory, null=True, blank=True, on_delete=models.SET_NULL, related_name="assets"
+    )
+    tags = models.JSONField(default=list, blank=True)
+    keywords = models.JSONField(default=list, blank=True)
+    file = models.FileField(upload_to=media_upload_path)
+    file_type = models.CharField(max_length=16, choices=FileType.choices)
+    mime_type = models.CharField(max_length=120)
+    size = models.PositiveBigIntegerField()
+    product_service = models.CharField(max_length=200, blank=True)
+    search_text = models.TextField(max_length=8000)
+    embedding = VectorField(dimensions=768, null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    allow_ai_send = models.BooleanField(default=False)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    error = models.TextField(blank=True)
+    meta_media_id = models.CharField(max_length=128, blank=True)
+    meta_media_status = models.CharField(
+        max_length=16, choices=MetaMediaStatus.choices, default=MetaMediaStatus.MISSING
+    )
+    meta_media_updated_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def clean(self):
+        if self.category_id and self.category.company_id != self.company_id:
+            raise ValidationError("Categoria pertence a outra empresa.")
+
+    def __str__(self):
+        return f"{self.name} — {self.company}"
+
+
+@receiver(post_save, sender=Company)
+def create_default_media_categories(sender, instance, created, **kwargs):
+    if created:
+        MediaCategory.objects.bulk_create(
+            [
+                MediaCategory(company=instance, name=name)
+                for name in (
+                    "Produtos", "Serviços", "Tutoriais", "Mídias gerais",
+                    "Documentos", "Perguntas frequentes",
+                )
+            ],
+            ignore_conflicts=True,
+        )
