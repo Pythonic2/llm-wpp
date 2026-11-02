@@ -1,21 +1,4 @@
 services:
-  db:
-    image: pgvector/pgvector:pg16
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-gesttech}
-      POSTGRES_USER: ${POSTGRES_USER:-gesttech}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD no Portainer}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-gesttech} -d ${POSTGRES_DB:-gesttech}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    networks:
-      - pi_default
-
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -32,7 +15,16 @@ services:
     pull_policy: always
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-gesttech}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-gesttech}
+      DB_NAME: ${DB_NAME:?Defina DB_NAME no Portainer}
+      DB_USER: ${DB_USER:?Defina DB_USER no Portainer}
+      DB_PASSWORD: ${DB_PASSWORD:?Defina DB_PASSWORD no Portainer}
+      DB_HOST: ${DB_HOST:?Defina DB_HOST no Portainer}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_SCHEMA: ${DB_SCHEMA:-crm}
+      DB_SSLMODE: ${DB_SSLMODE:-require}
+      DB_CHANNEL_BINDING: ${DB_CHANNEL_BINDING:-require}
+      DB_CONNECT_TIMEOUT: ${DB_CONNECT_TIMEOUT:-10}
+      DB_CONN_MAX_AGE: ${DB_CONN_MAX_AGE:-60}
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Defina DJANGO_SECRET_KEY no Portainer}
@@ -76,8 +68,6 @@ services:
     volumes:
       - media_data:/app/media
     depends_on:
-      db:
-        condition: service_healthy
       redis:
         condition: service_healthy
     networks:
@@ -89,7 +79,16 @@ services:
     command: .venv/bin/celery -A gesttech worker -l info
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-gesttech}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-gesttech}
+      DB_NAME: ${DB_NAME:?Defina DB_NAME no Portainer}
+      DB_USER: ${DB_USER:?Defina DB_USER no Portainer}
+      DB_PASSWORD: ${DB_PASSWORD:?Defina DB_PASSWORD no Portainer}
+      DB_HOST: ${DB_HOST:?Defina DB_HOST no Portainer}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_SCHEMA: ${DB_SCHEMA:-crm}
+      DB_SSLMODE: ${DB_SSLMODE:-require}
+      DB_CHANNEL_BINDING: ${DB_CHANNEL_BINDING:-require}
+      DB_CONNECT_TIMEOUT: ${DB_CONNECT_TIMEOUT:-10}
+      DB_CONN_MAX_AGE: ${DB_CONN_MAX_AGE:-60}
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Defina DJANGO_SECRET_KEY no Portainer}
@@ -131,15 +130,12 @@ services:
     volumes:
       - media_data:/app/media
     depends_on:
-      db:
-        condition: service_healthy
       redis:
         condition: service_healthy
     networks:
       - pi_default
 
 volumes:
-  postgres_data:
   media_data:
 
 networks:

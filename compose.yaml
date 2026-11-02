@@ -1,22 +1,4 @@
 services:
-  db:
-    image: pgvector/pgvector:pg16
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-gesttech}
-      POSTGRES_USER: ${POSTGRES_USER:-gesttech}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gesttech}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U gesttech"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    networks:
-      - pi_default
-
   redis:
     image: redis:7-alpine
     ports:
@@ -34,7 +16,16 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-gesttech}:${POSTGRES_PASSWORD:-gesttech}@db:5432/${POSTGRES_DB:-gesttech}
+      DB_NAME: ${DB_NAME:?Defina DB_NAME}
+      DB_USER: ${DB_USER:?Defina DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD:?Defina DB_PASSWORD}
+      DB_HOST: ${DB_HOST:?Defina DB_HOST}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_SCHEMA: ${DB_SCHEMA:-crm}
+      DB_SSLMODE: ${DB_SSLMODE:-require}
+      DB_CHANNEL_BINDING: ${DB_CHANNEL_BINDING:-require}
+      DB_CONNECT_TIMEOUT: ${DB_CONNECT_TIMEOUT:-10}
+      DB_CONN_MAX_AGE: ${DB_CONN_MAX_AGE:-60}
       CELERY_BROKER_URL: redis://redis:6379/0
       FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:-http://localhost:5173}
       CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-http://localhost:5173,http://localhost:8123}
@@ -43,8 +34,6 @@ services:
     volumes:
       - media_data:/app/media
     depends_on:
-      db:
-        condition: service_healthy
       redis:
         condition: service_healthy
     networks:
@@ -56,13 +45,20 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-gesttech}:${POSTGRES_PASSWORD:-gesttech}@db:5432/${POSTGRES_DB:-gesttech}
+      DB_NAME: ${DB_NAME:?Defina DB_NAME}
+      DB_USER: ${DB_USER:?Defina DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD:?Defina DB_PASSWORD}
+      DB_HOST: ${DB_HOST:?Defina DB_HOST}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_SCHEMA: ${DB_SCHEMA:-crm}
+      DB_SSLMODE: ${DB_SSLMODE:-require}
+      DB_CHANNEL_BINDING: ${DB_CHANNEL_BINDING:-require}
+      DB_CONNECT_TIMEOUT: ${DB_CONNECT_TIMEOUT:-10}
+      DB_CONN_MAX_AGE: ${DB_CONN_MAX_AGE:-60}
       CELERY_BROKER_URL: redis://redis:6379/0
     volumes:
       - media_data:/app/media
     depends_on:
-      db:
-        condition: service_healthy
       redis:
         condition: service_healthy
     networks:
@@ -85,7 +81,6 @@ services:
       - pi_default
 
 volumes:
-  postgres_data:
   media_data:
   frontend_node_modules:
 
