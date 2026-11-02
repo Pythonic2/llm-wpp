@@ -134,10 +134,8 @@ services:
         condition: service_healthy
     networks:
       - pi_default
-
 volumes:
   media_data:
-
 networks:
   pi_default:
     external: true
