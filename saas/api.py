@@ -49,7 +49,7 @@ from .models import (
     WhatsAppNumber,
 )
 from .services import conversation_ai_lock, send_whatsapp_text
-from .tasks import analyze_conversation, process_document, process_media_asset
+from .tasks import analyze_conversation, process_document, process_media_asset, store_inbound_attachment
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -505,6 +505,14 @@ class ConversationMessagesView(APIView):
         )
         paginator = ConversationMessagePagination()
         page = paginator.paginate_queryset(queryset, request, view=self)
+        for message in page:
+            if (
+                message.source_media_id
+                and message.message_type in {"image", "document", "audio"}
+                and not message.attachment
+                and not message.attachment_error
+            ):
+                store_inbound_attachment.delay(message.pk)
         return paginator.get_paginated_response(MessageSerializer(page, many=True).data)
 
     def post(self, request, company_id, conversation_id):
@@ -594,6 +602,27 @@ class ConversationMessagesView(APIView):
                 lock.release()
             except LockError:
                 logger.warning("O lock do atendimento expirou antes da liberação; conversation_id=%s", conversation.pk)
+
+
+class MessageAttachmentDownloadView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    def get(self, request, company_id, conversation_id, message_id):
+        company, _ = _company_for_request(request, company_id)
+        message = generics.get_object_or_404(
+            Message,
+            pk=message_id,
+            company=company,
+            conversation_id=conversation_id,
+        )
+        if not message.attachment:
+            raise NotFound("O anexo ainda não está disponível.")
+        return FileResponse(
+            message.attachment.open("rb"),
+            as_attachment=True,
+            filename=message.attachment_name or "anexo",
+            content_type=message.attachment_mime_type or "application/octet-stream",
+        )
 
 
 class FollowUpListView(APIView):

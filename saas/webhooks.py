@@ -9,7 +9,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 from .models import Contact, Conversation, Message, WhatsAppNumber
-from .tasks import analyze_conversation, answer_inbound_message
+from .tasks import analyze_conversation, answer_inbound_message, store_inbound_attachment
 
 
 def _valid_signature(request):
@@ -48,12 +48,16 @@ def whatsapp_webhook(request):
                     contact, _ = Contact.objects.update_or_create(company=number.company, wa_id=wa_id, defaults={"name": profiles.get(wa_id, ""), "phone": wa_id})
                     conversation, _ = Conversation.objects.get_or_create(company=number.company, whatsapp_number=number, contact=contact)
                     message_type = item.get("type", "unknown")
-                    ai_status = Message.AIStatus.QUEUED if message_type in {"text", "audio"} else Message.AIStatus.SKIPPED
-                    message, created = Message.objects.get_or_create(external_id=external_id, defaults={"company": number.company, "conversation": conversation, "direction": Message.Direction.INBOUND, "message_type": message_type, "text": item.get("text", {}).get("body", ""), "source_media_id": item.get("audio", {}).get("id", ""), "raw_payload": item, "ai_status": ai_status})
+                    ai_status = Message.AIStatus.QUEUED if message_type in {"text", "audio", "image", "document"} else Message.AIStatus.SKIPPED
+                    media_payload = item.get(message_type, {}) if message_type in {"audio", "image", "document"} else {}
+                    text = item.get("text", {}).get("body", "") or media_payload.get("caption", "")
+                    message, created = Message.objects.get_or_create(external_id=external_id, defaults={"company": number.company, "conversation": conversation, "direction": Message.Direction.INBOUND, "message_type": message_type, "text": text, "source_media_id": media_payload.get("id", ""), "raw_payload": item, "ai_status": ai_status})
                     if created:
                         conversation.last_message_at = timezone.now()
                         conversation.save(update_fields=["last_message_at"])
                         transaction.on_commit(lambda pk=message.pk: answer_inbound_message.delay(pk))
+                        if message_type in {"image", "document", "audio"}:
+                            transaction.on_commit(lambda pk=message.pk: store_inbound_attachment.delay(pk))
                         if message_type == "text":
                             transaction.on_commit(lambda pk=conversation.pk: analyze_conversation.delay(pk))
     return JsonResponse({"status": "ok"})

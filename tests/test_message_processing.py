@@ -115,8 +115,9 @@ def test_hot_lead_notification_is_queued_until_delivery_is_confirmed(
     assert notify.call_count == 2
 
 
+@patch("saas.tasks.extract_hot_lead_details", return_value=None)
 @patch("saas.tasks.send_whatsapp_text", return_value="wamid.alert")
-def test_hot_lead_notification_contains_conversation_summary(send, tenant_data):
+def test_hot_lead_notification_contains_conversation_summary(send, details, tenant_data):
     company = tenant_data["company"]
     company.hot_lead_notifications_enabled = True
     company.hot_lead_notification_phone = "5511999990000"

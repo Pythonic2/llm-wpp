@@ -191,15 +191,12 @@ def test_whatsapp_sender_uses_cloud_api(post, settings):
     response.raise_for_status.assert_called_once()
 
 @patch("saas.services.httpx.post")
-def test_whatsapp_sender_retries_brazilian_mobile_with_ninth_digit(post, settings):
+def test_whatsapp_sender_normalizes_brazilian_mobile_before_sending(post, settings):
     settings.WHATSAPP_ACCESS_TOKEN = "token"
-    rejected = Mock(status_code=400)
-    rejected.json.return_value = {"error": {"code": 131030}}
     accepted = Mock(status_code=200)
     accepted.json.return_value = {"messages": [{"id": "wamid.out"}]}
-    post.side_effect = [rejected, accepted]
+    post.return_value = accepted
 
     assert send_whatsapp_text(SimpleNamespace(phone_number_id="test-number"), "558398413751", "Resposta") == "wamid.out"
-    assert post.call_count == 2
-    assert post.call_args_list[0].kwargs["json"]["to"] == "558398413751"
-    assert post.call_args_list[1].kwargs["json"]["to"] == "5583998413751"
+    assert post.call_count == 1
+    assert post.call_args.kwargs["json"]["to"] == "5583998413751"

@@ -15,6 +15,7 @@ from .models import (
     Message,
     WhatsAppNumber,
 )
+from .services import normalize_whatsapp_recipient
 
 User = get_user_model()
 
@@ -62,7 +63,7 @@ class CompanyAISettingsSerializer(serializers.ModelSerializer):
         digits = "".join(character for character in value if character.isdigit())
         if value and not 8 <= len(digits) <= 15:
             raise serializers.ValidationError("Informe um WhatsApp válido, com DDI e DDD.")
-        return value
+        return normalize_whatsapp_recipient(digits) if value else ""
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
@@ -163,6 +164,16 @@ class ConversationSerializer(serializers.ModelSerializer):
 
 
 class MessageSerializer(serializers.ModelSerializer):
+    attachment_url = serializers.SerializerMethodField()
+
+    def get_attachment_url(self, obj):
+        if not obj.attachment:
+            return ""
+        return (
+            f"/api/v1/companies/{obj.company_id}/conversations/{obj.conversation_id}/"
+            f"messages/{obj.pk}/attachment/"
+        )
+
     class Meta:
         model = Message
         fields = (
@@ -173,6 +184,11 @@ class MessageSerializer(serializers.ModelSerializer):
             "text",
             "transcription",
             "source_media_id",
+            "attachment_url",
+            "attachment_name",
+            "attachment_mime_type",
+            "attachment_size",
+            "attachment_error",
             "media_asset",
             "status",
             "ai_status",

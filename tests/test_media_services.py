@@ -8,6 +8,7 @@ from saas.services import (
     download_whatsapp_audio,
     select_media_for_question,
     send_whatsapp_media,
+    send_whatsapp_media_id,
     transcribe_audio,
 )
 
@@ -107,6 +108,28 @@ def test_send_whatsapp_image_uses_existing_meta_id(post, settings):
     payload = post.call_args.kwargs["json"]
     assert payload["type"] == "image"
     assert payload["image"]["id"] == "meta-media-id"
+
+
+@patch("saas.services.httpx.post")
+def test_forward_received_document_by_media_id(post, settings):
+    response = Mock(status_code=200)
+    response.json.return_value = {"messages": [{"id": "wamid.forwarded"}]}
+    post.return_value = response
+
+    result = send_whatsapp_media_id(
+        SimpleNamespace(phone_number_id="number-id"),
+        "558398413751",
+        "received-media-id",
+        "document",
+        caption="Pagamento pendente de validação.",
+        filename="comprovante.pdf",
+    )
+
+    assert result == "wamid.forwarded"
+    payload = post.call_args.kwargs["json"]
+    assert payload["to"] == "5583998413751"
+    assert payload["document"]["id"] == "received-media-id"
+    assert payload["document"]["filename"] == "comprovante.pdf"
 
 
 def test_send_whatsapp_media_blocks_cross_tenant(settings):

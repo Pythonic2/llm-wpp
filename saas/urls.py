@@ -22,6 +22,7 @@ from .api import (
     MediaAssetListView,
     MediaCategoryDetailView,
     MediaCategoryListView,
+    MessageAttachmentDownloadView,
     LoginView,
     LogoutView,
     MeView,
@@ -107,6 +108,11 @@ urlpatterns = [
         "v1/companies/<uuid:company_id>/knowledge-bases/",
         KnowledgeBaseListView.as_view(),
         name="api-knowledge-bases",
+    ),
+    path(
+        "v1/companies/<uuid:company_id>/conversations/<int:conversation_id>/messages/<int:message_id>/attachment/",
+        MessageAttachmentDownloadView.as_view(),
+        name="api-message-attachment",
     ),
     path(
         "v1/companies/<uuid:company_id>/knowledge-bases/<int:object_id>/",

@@ -1,27 +1,65 @@
+import hashlib
+import json
 import logging
+import mimetypes
 from datetime import timedelta
+from pathlib import Path
 
 from celery import shared_task
+from django.core.files.base import ContentFile
 from django.db import transaction
 from django.utils import timezone
 from redis.exceptions import LockError
 
-from .models import Conversation, KnowledgeChunk, KnowledgeDocument, MediaAsset, Message
+from .models import Company, Conversation, KnowledgeChunk, KnowledgeDocument, MediaAsset, Message
 from .services import (
     answer_with_rag,
     analyze_sales_conversation,
     conversation_ai_lock,
     download_whatsapp_audio,
+    download_whatsapp_attachment,
     embed_texts,
     extract_text,
+    extract_hot_lead_details,
+    normalize_whatsapp_recipient,
     select_media_for_question,
     send_whatsapp_media,
+    send_whatsapp_media_id,
     send_whatsapp_text,
     split_text,
     transcribe_audio,
 )
 
 logger = logging.getLogger(__name__)
+
+
+@shared_task(autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
+def store_inbound_attachment(message_id):
+    message = Message.objects.get(pk=message_id)
+    if message.attachment or not message.source_media_id or message.message_type not in {"image", "document", "audio"}:
+        return
+    if message.attachment_error == "processing":
+        return
+    Message.objects.filter(pk=message.pk).update(attachment_error="processing")
+    try:
+        content, mime_type = download_whatsapp_attachment(message.source_media_id)
+        payload = message.raw_payload.get(message.message_type, {})
+        original_name = Path(str(payload.get("filename") or "")).name
+        if not original_name:
+            extension = mimetypes.guess_extension(mime_type.split(";", 1)[0].strip()) or ".bin"
+            original_name = f"{message.message_type}-{message.pk}{extension}"
+        message.attachment.save(original_name, ContentFile(content), save=False)
+        message.attachment_name = original_name[:255]
+        message.attachment_mime_type = mime_type[:120]
+        message.attachment_size = len(content)
+        message.attachment_error = ""
+        message.save(update_fields=(
+            "attachment", "attachment_name", "attachment_mime_type",
+            "attachment_size", "attachment_error",
+        ))
+    except Exception as exc:
+        Message.objects.filter(pk=message.pk).update(attachment_error=str(exc)[:2000])
+        raise
 
 
 @shared_task(autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
@@ -40,9 +78,9 @@ def analyze_conversation(conversation_id):
         if analysis["temperature"] != Conversation.LeadTemperature.HOT:
             conversation.hot_lead_notified_at = None
             conversation.hot_lead_notification_message_id = ""
+            conversation.hot_lead_notification_fingerprint = ""
         elif (
-            not conversation.hot_lead_notification_message_id
-            and conversation.company.hot_lead_notifications_enabled
+            conversation.company.hot_lead_notifications_enabled
             and conversation.company.hot_lead_notification_phone
         ):
             should_notify_hot_lead = True
@@ -60,13 +98,14 @@ def analyze_conversation(conversation_id):
                 "objections", "recommended_action", "analyzed_at", "next_follow_up_at",
                 "follow_up_completed_at", "hot_lead_notified_at",
                 "hot_lead_notification_message_id",
+                "hot_lead_notification_fingerprint",
             ]
         )
         if should_notify_hot_lead:
             transaction.on_commit(lambda: notify_hot_lead.delay(conversation.pk))
 
 
-def _hot_lead_notification_text(conversation):
+def _hot_lead_notification_text(conversation, details=None):
     contact = conversation.contact
     lines = [
         "🔥 *Novo lead quente*",
@@ -74,15 +113,46 @@ def _hot_lead_notification_text(conversation):
         f"Cliente: {contact.name or 'Não informado'}",
         f"WhatsApp: {contact.phone or contact.wa_id}",
         f"Intenção de compra: {conversation.purchase_intent_score}/100",
-        f"Resumo: {conversation.analysis_summary or 'Sem resumo disponível.'}",
     ]
+    details = details or {}
+    lines.append(f"Resumo: {details.get('resumo') or conversation.analysis_summary or 'Sem resumo disponível.'}")
+    informed = details.get("dados_informados", [])
+    if informed:
+        lines.extend(["", "*Dados informados pelo cliente:*", *[
+            f"• {item['campo']}: {item['valor']}" for item in informed
+        ]])
+    sections = (
+        ("Interesses", "interesses"),
+        ("Detalhes do produto, serviço ou pedido", "detalhes_pedido"),
+        ("Condições comerciais", "condicoes_comerciais"),
+        ("Informações pendentes", "pendencias"),
+    )
+    for title, field in sections:
+        values = details.get(field, [])
+        if values:
+            lines.extend(["", f"*{title}:*", *[f"• {value}" for value in values]])
     if conversation.buying_signals:
         lines.append("Sinais de compra: " + "; ".join(conversation.buying_signals[:3]))
     if conversation.objections:
         lines.append("Objeções: " + "; ".join(conversation.objections[:3]))
     if conversation.recommended_action:
         lines.append(f"Próxima ação: {conversation.recommended_action}")
-    return "\n".join(lines)[:4000]
+    return "\n".join(lines)
+
+
+def _split_whatsapp_notification(text, limit=4000):
+    chunks, current = [], []
+    current_size = 0
+    for line in text.splitlines():
+        extra = len(line) + (1 if current else 0)
+        if current and current_size + extra > limit:
+            chunks.append("\n".join(current))
+            current, current_size = [], 0
+        current.append(line)
+        current_size += len(line) + (1 if len(current) > 1 else 0)
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
 
 
 @shared_task(autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
@@ -97,15 +167,90 @@ def notify_hot_lead(conversation_id):
         or not company.hot_lead_notification_phone
     ):
         return
-    external_id = send_whatsapp_text(
-        conversation.whatsapp_number,
-        company.hot_lead_notification_phone,
-        _hot_lead_notification_text(conversation),
+    try:
+        details = extract_hot_lead_details(conversation.pk)
+    except Exception:
+        logger.exception("Falha ao extrair detalhes do lead quente %s", conversation.pk)
+        details = None
+    normalized_phone = normalize_whatsapp_recipient(company.hot_lead_notification_phone)
+    fingerprint_payload = details or {
+        "summary": conversation.analysis_summary,
+        "signals": conversation.buying_signals,
+        "objections": conversation.objections,
+        "action": conversation.recommended_action,
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True).encode()
+    ).hexdigest()
+    configured_digits = "".join(
+        character for character in company.hot_lead_notification_phone if character.isdigit()
     )
+    if (
+        conversation.hot_lead_notification_message_id
+        and conversation.hot_lead_notification_fingerprint == fingerprint
+        and normalized_phone == configured_digits
+    ):
+        return
+    external_id = ""
+    for chunk in _split_whatsapp_notification(_hot_lead_notification_text(conversation, details)):
+        external_id = send_whatsapp_text(
+            conversation.whatsapp_number,
+            normalized_phone,
+            chunk,
+        )
+    if normalized_phone != company.hot_lead_notification_phone:
+        Company.objects.filter(pk=company.pk).update(hot_lead_notification_phone=normalized_phone)
     Conversation.objects.filter(pk=conversation.pk).update(
         hot_lead_notified_at=timezone.now(),
         hot_lead_notification_message_id=external_id,
+        hot_lead_notification_fingerprint=fingerprint,
     )
+
+
+def _payment_receipt_notification_text(incoming):
+    conversation = incoming.conversation
+    contact = conversation.contact
+    media_label = "foto" if incoming.message_type == "image" else "PDF/arquivo"
+    lines = [
+        "🧾 *Arquivo recebido para validação*",
+        "",
+        f"Cliente: {contact.name or 'Não informado'}",
+        f"WhatsApp: {contact.phone or contact.wa_id}",
+        f"Tipo recebido: {media_label}",
+        "Status: pagamento ainda não confirmado; validação pendente.",
+    ]
+    if incoming.text:
+        lines.append(f"Mensagem do cliente: {incoming.text[:300]}")
+    if conversation.analysis_summary:
+        lines.append(f"Resumo da conversa: {conversation.analysis_summary[:500]}")
+    return "\n".join(lines)[:1024]
+
+
+@shared_task(autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
+def forward_inbound_media_to_notification(incoming_message_id):
+    incoming = Message.objects.select_related(
+        "company", "conversation__contact", "conversation__whatsapp_number"
+    ).get(pk=incoming_message_id)
+    company = incoming.company
+    if (
+        incoming.message_type not in {"image", "document"}
+        or not incoming.source_media_id
+        or not company.hot_lead_notifications_enabled
+        or not company.hot_lead_notification_phone
+        or incoming.raw_payload.get("notification_forwarded_id")
+    ):
+        return
+    media_payload = incoming.raw_payload.get(incoming.message_type, {})
+    external_id = send_whatsapp_media_id(
+        incoming.conversation.whatsapp_number,
+        company.hot_lead_notification_phone,
+        incoming.source_media_id,
+        incoming.message_type,
+        caption=_payment_receipt_notification_text(incoming),
+        filename=media_payload.get("filename", ""),
+    )
+    raw_payload = {**incoming.raw_payload, "notification_forwarded_id": external_id}
+    Message.objects.filter(pk=incoming.pk).update(raw_payload=raw_payload)
 
 
 @shared_task(autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
@@ -225,7 +370,9 @@ def answer_inbound_message(self, message_id):
             raise self.retry(countdown=2)
 
         conversation, number = incoming.conversation, incoming.conversation.whatsapp_number
-        if conversation.ai_paused or not number.ai_enabled or not number.is_active or incoming.message_type not in {"text", "audio"}:
+        if incoming.message_type in {"image", "document"}:
+            forward_inbound_media_to_notification.delay(incoming.pk)
+        if conversation.ai_paused or not number.ai_enabled or not number.is_active or incoming.message_type not in {"text", "audio", "image", "document"}:
             incoming.ai_status = Message.AIStatus.SKIPPED
             incoming.save(update_fields=["ai_status"])
             return
@@ -242,6 +389,15 @@ def answer_inbound_message(self, message_id):
         selected_media = None
         try:
             answer = ""
+            if incoming.message_type in {"image", "document"}:
+                media_payload = incoming.raw_payload.get(incoming.message_type, {})
+                received_label = "sua foto" if incoming.message_type == "image" else (
+                    "seu PDF" if media_payload.get("mime_type") == "application/pdf" else "seu arquivo"
+                )
+                answer = (
+                    f"Recebi {received_label}. O pagamento ainda não está confirmado. O arquivo "
+                    "está em processamento e foi encaminhado ao setor responsável para validação."
+                )
             if incoming.message_type == "audio" and not incoming.transcription:
                 try:
                     source_media_id = incoming.source_media_id or incoming.raw_payload.get("audio", {}).get("id", "")

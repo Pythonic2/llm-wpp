@@ -100,6 +100,7 @@ class Conversation(models.Model):
     analyzed_at = models.DateTimeField(null=True, blank=True)
     hot_lead_notified_at = models.DateTimeField(null=True, blank=True)
     hot_lead_notification_message_id = models.CharField(max_length=128, blank=True)
+    hot_lead_notification_fingerprint = models.CharField(max_length=64, blank=True)
     opportunity_status = models.CharField(
         max_length=12, choices=OpportunityStatus.choices, default=OpportunityStatus.OPEN
     )
@@ -116,6 +117,11 @@ class Conversation(models.Model):
     def clean(self):
         if self.whatsapp_number_id and self.whatsapp_number.company_id != self.company_id: raise ValidationError("Número pertence a outra empresa.")
         if self.contact_id and self.contact.company_id != self.company_id: raise ValidationError("Contato pertence a outra empresa.")
+
+
+def message_attachment_upload_path(instance, filename):
+    suffix = filename.rsplit(".", 1)[-1].lower()[:10] if "." in filename else "bin"
+    return f"companies/{instance.company_id}/message-attachments/{uuid.uuid4()}.{suffix}"
 
 
 class Message(models.Model):
@@ -152,6 +158,11 @@ class Message(models.Model):
         "MediaAsset", null=True, blank=True, on_delete=models.SET_NULL, related_name="messages"
     )
     source_media_id = models.CharField(max_length=128, blank=True)
+    attachment = models.FileField(upload_to=message_attachment_upload_path, blank=True)
+    attachment_name = models.CharField(max_length=255, blank=True)
+    attachment_mime_type = models.CharField(max_length=120, blank=True)
+    attachment_size = models.PositiveBigIntegerField(default=0)
+    attachment_error = models.TextField(blank=True)
     transcription = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
