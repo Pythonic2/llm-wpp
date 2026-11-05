@@ -47,6 +47,7 @@ Membros podem ser listados por qualquer integrante; somente owner/admin (e super
 ## Atendimento e contatos
 
 - `GET|POST /companies/{company_id}/whatsapp-numbers/`; `GET|PATCH|DELETE /companies/{company_id}/whatsapp-numbers/{id}/`.
+- `GET /companies/{company_id}/whatsapp/embedded-signup/config/` retorna a configuração pública do Embedded Signup. `POST /companies/{company_id}/whatsapp/embedded-signup/complete/` troca o código no servidor e aceita exclusivamente a conclusão de coexistência.
 - `GET|POST /companies/{company_id}/contacts/`; o POST recebe `name`, `phone` e o `wa_id` obrigatório. O `wa_id` não pode ser alterado depois da criação.
 - `GET|PATCH|DELETE /companies/{company_id}/contacts/{id}/`.
 - `GET /companies/{company_id}/contacts/{id}/conversations/` lista as conversas do contato.
@@ -61,6 +62,13 @@ Membros podem ser listados por qualquer integrante; somente owner/admin (e super
 Cada conversa expõe `lead_temperature` (`hot`, `warm`, `cold` ou `unknown`), `purchase_intent_score`, `analysis_summary`, `buying_signals`, `objections`, `recommended_action`, `opportunity_status` e `next_follow_up_at`. A análise usa os itens efetivamente conversados e é atualizada em segundo plano.
 
 Todos os endpoints operacionais permitem acesso a `agent`, `admin` e `owner`. A lista de números pode ser consultada por qualquer membro; criar, alterar ou excluir integrações exige `admin` ou `owner`.
+
+## Pedidos com confirmação humana
+
+- `GET /companies/{company_id}/orders/` lista pedidos da empresa e aceita filtro `status`.
+- `POST /companies/{company_id}/orders/{order_id}/approve/` e `reject/` exigem administrador ou proprietário.
+- Pedidos começam em `awaiting_approval`. A decisão usa lock no banco, registra usuário, horário e transição e não pode ser repetida.
+- A confirmação ao cliente é criada pelo backend somente depois da aprovação; uma resposta do Gemini não tem autoridade para confirmar pedidos.
 
 ## Conhecimento
 

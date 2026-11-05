@@ -33,6 +33,7 @@ from .api_serializers import (
     MediaCategorySerializer,
     MembershipSerializer,
     MessageSerializer,
+    OrderSerializer,
     UserSerializer,
     WhatsAppNumberSerializer,
 )
@@ -46,10 +47,16 @@ from .models import (
     MediaCategory,
     Membership,
     Message,
+    Order,
+    OrderStatusEvent,
     WhatsAppNumber,
 )
 from .services import conversation_ai_lock, send_whatsapp_text
 from .tasks import analyze_conversation, process_document, process_media_asset, store_inbound_attachment
+from .meta import (
+    MetaConfigurationError, encrypt_access_token, exchange_embedded_signup_code,
+    subscribe_app_to_waba, verify_coexistence_assets,
+)
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -418,6 +425,128 @@ class WhatsAppNumberDetailView(CompanyModelDetailView):
     model = WhatsAppNumber
     serializer_class = WhatsAppNumberSerializer
     minimum_role = "admin"
+
+
+class EmbeddedSignupConfigView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    def get(self, request, company_id):
+        _company_for_request(request, company_id, "admin")
+        if not all((settings.META_APP_ID, settings.META_EMBEDDED_SIGNUP_CONFIG_ID,
+                    settings.WHATSAPP_TOKEN_ENCRYPTION_KEY)):
+            raise ValidationError({"detail": "Embedded Signup ainda não está configurado no servidor."})
+        return Response({
+            "app_id": settings.META_APP_ID,
+            "config_id": settings.META_EMBEDDED_SIGNUP_CONFIG_ID,
+            "api_version": settings.WHATSAPP_API_VERSION,
+            "feature_type": "whatsapp_business_app_onboarding",
+            "session_info_version": "3",
+        })
+
+
+class EmbeddedSignupCompleteView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    def post(self, request, company_id):
+        company, _ = _company_for_request(request, company_id, "admin")
+        code = str(request.data.get("code", "")).strip()
+        waba_id = str(request.data.get("waba_id", "")).strip()
+        phone_number_id = str(request.data.get("phone_number_id", "")).strip()
+        event = str(request.data.get("event", "")).strip()
+        if event != "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING":
+            raise ValidationError({
+                "detail": "O fluxo não confirmou a coexistência. O número não foi conectado."
+            })
+        if not code or not waba_id or not phone_number_id:
+            raise ValidationError({"detail": "A Meta não retornou todos os dados da conexão."})
+        if WhatsAppNumber.objects.filter(phone_number_id=phone_number_id).exclude(company=company).exists():
+            raise ValidationError({"detail": "Este número já está associado a outra empresa."})
+        try:
+            token = exchange_embedded_signup_code(code)
+            phone = verify_coexistence_assets(token, waba_id, phone_number_id)
+            encrypted_token = encrypt_access_token(token)
+            subscribe_app_to_waba(token, waba_id)
+        except (MetaConfigurationError, ValueError) as exc:
+            raise ValidationError({"detail": str(exc)}) from exc
+        except Exception as exc:
+            logger.exception("Falha no Embedded Signup; company_id=%s", company.pk)
+            raise ValidationError({
+                "detail": "A Meta não concluiu a conexão. Verifique a elegibilidade e tente novamente."
+            }) from exc
+        number, _ = WhatsAppNumber.objects.update_or_create(
+            phone_number_id=phone_number_id,
+            defaults={
+                "company": company,
+                "display_phone_number": str(phone.get("display_phone_number", "")),
+                "business_account_id": waba_id,
+                "access_token_encrypted": encrypted_token,
+                "connection_mode": "coexistence",
+                "connected_at": timezone.now(),
+                "connection_error": "",
+                "is_active": True,
+            },
+        )
+        return Response(WhatsAppNumberSerializer(number).data, status=status.HTTP_201_CREATED)
+
+
+class OrderListView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    def get(self, request, company_id):
+        company, _ = _company_for_request(request, company_id)
+        queryset = Order.objects.filter(company=company).select_related(
+            "conversation__contact", "approved_by"
+        ).order_by("-created_at")
+        order_status = request.query_params.get("status")
+        if order_status:
+            queryset = queryset.filter(status=order_status)
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(queryset, request, view=self)
+        return paginator.get_paginated_response(OrderSerializer(page, many=True).data)
+
+
+class OrderDecisionView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    def post(self, request, company_id, order_id, action):
+        company, _ = _company_for_request(request, company_id, "admin")
+        target = {"approve": Order.Status.APPROVED, "reject": Order.Status.REJECTED}.get(action)
+        if target is None:
+            raise NotFound("Ação não encontrada.")
+        with transaction.atomic():
+            order = generics.get_object_or_404(
+                Order.objects.select_for_update().select_related(
+                    "conversation__contact", "conversation__whatsapp_number"
+                ), company=company, pk=order_id,
+            )
+            if order.status != Order.Status.PENDING:
+                raise ValidationError({"detail": "Este pedido já foi decidido."})
+            previous = order.status
+            order.status = target
+            order.approved_by = request.user
+            order.decided_at = timezone.now()
+            order.save(update_fields=("status", "approved_by", "decided_at", "updated_at"))
+            OrderStatusEvent.objects.create(
+                order=order, company=company, actor=request.user,
+                previous_status=previous, new_status=target,
+            )
+        message_text = (
+            f"Seu pedido {order.pk} foi aprovado e está confirmado pela nossa equipe."
+            if target == Order.Status.APPROVED else
+            f"Nossa equipe não conseguiu aprovar o pedido {order.pk}. Se desejar, podemos verificar outras opções."
+        )
+        try:
+            external_id = send_whatsapp_text(
+                order.conversation.whatsapp_number, order.conversation.contact.wa_id, message_text
+            )
+            Message.objects.create(
+                company=company, conversation=order.conversation, external_id=external_id,
+                direction=Message.Direction.OUTBOUND, message_type="text", text=message_text,
+                status=Message.Status.SENT,
+            )
+        except Exception:
+            logger.exception("Pedido decidido, mas notificação ao cliente falhou; order_id=%s", order.pk)
+        return Response(OrderSerializer(order).data)
 
 
 class ContactListView(CompanyModelListCreateView):

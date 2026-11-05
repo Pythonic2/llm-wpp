@@ -31,6 +31,10 @@ from .api import (
     RefreshView,
     WhatsAppNumberDetailView,
     WhatsAppNumberListView,
+    EmbeddedSignupConfigView,
+    EmbeddedSignupCompleteView,
+    OrderListView,
+    OrderDecisionView,
 )
 from .webhooks import whatsapp_webhook
 
@@ -73,6 +77,10 @@ urlpatterns = [
         WhatsAppNumberDetailView.as_view(),
         name="api-whatsapp-number",
     ),
+    path("v1/companies/<uuid:company_id>/whatsapp/embedded-signup/config/", EmbeddedSignupConfigView.as_view()),
+    path("v1/companies/<uuid:company_id>/whatsapp/embedded-signup/complete/", EmbeddedSignupCompleteView.as_view()),
+    path("v1/companies/<uuid:company_id>/orders/", OrderListView.as_view(), name="api-orders"),
+    path("v1/companies/<uuid:company_id>/orders/<uuid:order_id>/<str:action>/", OrderDecisionView.as_view(), name="api-order-decision"),
     path("v1/companies/<uuid:company_id>/contacts/", ContactListView.as_view(), name="api-contacts"),
     path(
         "v1/companies/<uuid:company_id>/contacts/<int:object_id>/",

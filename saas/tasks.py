@@ -3,6 +3,7 @@ import json
 import logging
 import mimetypes
 from datetime import timedelta
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from celery import shared_task
@@ -11,7 +12,7 @@ from django.db import transaction
 from django.utils import timezone
 from redis.exceptions import LockError
 
-from .models import Company, Conversation, KnowledgeChunk, KnowledgeDocument, MediaAsset, Message
+from .models import Company, Conversation, KnowledgeChunk, KnowledgeDocument, MediaAsset, Message, Order
 from .services import (
     answer_with_rag,
     analyze_sales_conversation,
@@ -42,7 +43,9 @@ def store_inbound_attachment(message_id):
         return
     Message.objects.filter(pk=message.pk).update(attachment_error="processing")
     try:
-        content, mime_type = download_whatsapp_attachment(message.source_media_id)
+        content, mime_type = download_whatsapp_attachment(
+            message.source_media_id, message.conversation.whatsapp_number
+        )
         payload = message.raw_payload.get(message.message_type, {})
         original_name = Path(str(payload.get("filename") or "")).name
         if not original_name:
@@ -101,8 +104,78 @@ def analyze_conversation(conversation_id):
                 "hot_lead_notification_fingerprint",
             ]
         )
+        if analysis.get("order_requested"):
+            source = Message.objects.filter(
+                conversation=conversation, direction=Message.Direction.INBOUND
+            ).order_by("-created_at", "-pk").first()
+            if source is not None:
+                order_data = analysis.get("order", {})
+                try:
+                    raw_total = order_data.get("total")
+                    total = None if raw_total in (None, "") else Decimal(str(raw_total))
+                except (InvalidOperation, TypeError, ValueError):
+                    total = None
+                order, created = Order.objects.get_or_create(
+                    company=conversation.company,
+                    conversation=conversation,
+                    source_message=source,
+                    defaults={
+                        "items": order_data.get("items", []),
+                        "total": total,
+                        "requested_for": order_data.get("requested_for", ""),
+                        "notes": order_data.get("notes", ""),
+                        "summary": order_data.get("summary", "") or analysis["summary"],
+                    },
+                )
+                if created:
+                    transaction.on_commit(lambda order_id=order.pk: notify_pending_order.delay(str(order_id)))
         if should_notify_hot_lead:
             transaction.on_commit(lambda: notify_hot_lead.delay(conversation.pk))
+
+
+def _pending_order_notification_text(order):
+    contact = order.conversation.contact
+    lines = [
+        "🛒 *NOVO PEDIDO AGUARDANDO APROVAÇÃO*", "",
+        f"Cliente: {contact.name or 'Não informado'}",
+        f"WhatsApp: {contact.phone or contact.wa_id}",
+        f"Empresa: {order.company.name}",
+    ]
+    for item in order.items:
+        lines.append(f"• {item.get('quantity') or 'Quantidade não informada'} — {item.get('name', 'Item')}")
+    if order.total is not None:
+        lines.append(f"Valor informado: R$ {order.total}")
+    if order.requested_for:
+        lines.append(f"Data/prazo solicitado: {order.requested_for}")
+    if order.notes:
+        lines.append(f"Observações: {order.notes}")
+    if order.summary:
+        lines.append(f"Resumo: {order.summary}")
+    lines.extend(["", f"Identificador: {order.pk}", "Acesse o Gest Tech para aprovar ou rejeitar."])
+    return "\n".join(lines)
+
+
+@shared_task(autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
+def notify_pending_order(order_id):
+    order = Order.objects.select_related(
+        "company", "conversation__contact", "conversation__whatsapp_number"
+    ).get(pk=order_id)
+    company = order.company
+    if order.status != Order.Status.PENDING or not company.hot_lead_notification_phone:
+        return
+    text = _pending_order_notification_text(order)
+    fingerprint = hashlib.sha256(text.encode()).hexdigest()
+    if order.notification_message_id and order.notification_fingerprint == fingerprint:
+        return
+    external_id = send_whatsapp_text(
+        order.conversation.whatsapp_number,
+        normalize_whatsapp_recipient(company.hot_lead_notification_phone),
+        text,
+    )
+    Order.objects.filter(pk=order.pk, status=Order.Status.PENDING).update(
+        notification_message_id=external_id,
+        notification_fingerprint=fingerprint,
+    )
 
 
 def _hot_lead_notification_text(conversation, details=None):
@@ -401,7 +474,9 @@ def answer_inbound_message(self, message_id):
             if incoming.message_type == "audio" and not incoming.transcription:
                 try:
                     source_media_id = incoming.source_media_id or incoming.raw_payload.get("audio", {}).get("id", "")
-                    audio_data, mime_type = download_whatsapp_audio(source_media_id)
+                    audio_data, mime_type = download_whatsapp_audio(
+                        source_media_id, incoming.conversation.whatsapp_number
+                    )
                     incoming.transcription = transcribe_audio(audio_data, mime_type)
                     incoming.text = incoming.transcription
                     incoming.source_media_id = source_media_id

@@ -13,6 +13,7 @@ from .models import (
     MediaCategory,
     Membership,
     Message,
+    Order,
     WhatsAppNumber,
 )
 from .services import normalize_whatsapp_recipient
@@ -114,11 +115,32 @@ class WhatsAppNumberSerializer(serializers.ModelSerializer):
             "phone_number_id",
             "display_phone_number",
             "business_account_id",
+            "connection_mode",
+            "connected_at",
+            "connection_error",
             "ai_enabled",
             "is_active",
             "created_at",
         )
-        read_only_fields = ("id", "created_at")
+        read_only_fields = ("id", "connection_mode", "connected_at", "connection_error", "created_at")
+
+
+class OrderSerializer(serializers.ModelSerializer):
+    customer_name = serializers.CharField(source="conversation.contact.name", read_only=True)
+    customer_phone = serializers.SerializerMethodField()
+    approved_by = UserSerializer(read_only=True)
+
+    class Meta:
+        model = Order
+        fields = (
+            "id", "conversation", "customer_name", "customer_phone", "status", "items",
+            "total", "requested_for", "notes", "summary", "approved_by", "decided_at",
+            "created_at", "updated_at",
+        )
+        read_only_fields = fields
+
+    def get_customer_phone(self, obj):
+        return obj.conversation.contact.phone or obj.conversation.contact.wa_id
 
 
 class ConversationSerializer(serializers.ModelSerializer):

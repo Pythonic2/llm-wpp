@@ -47,6 +47,10 @@ class WhatsAppNumber(models.Model):
     phone_number_id = models.CharField(max_length=64, unique=True, help_text="ID do número na Meta")
     display_phone_number = models.CharField(max_length=32)
     business_account_id = models.CharField(max_length=64, blank=True)
+    access_token_encrypted = models.TextField(blank=True, editable=False)
+    connection_mode = models.CharField(max_length=24, default="manual")
+    connected_at = models.DateTimeField(null=True, blank=True)
+    connection_error = models.TextField(blank=True)
     ai_enabled = models.BooleanField(default=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -117,6 +121,65 @@ class Conversation(models.Model):
     def clean(self):
         if self.whatsapp_number_id and self.whatsapp_number.company_id != self.company_id: raise ValidationError("Número pertence a outra empresa.")
         if self.contact_id and self.contact.company_id != self.company_id: raise ValidationError("Contato pertence a outra empresa.")
+
+
+class Order(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "awaiting_approval", "Aguardando aprovação"
+        APPROVED = "approved", "Aprovado"
+        REJECTED = "rejected", "Rejeitado"
+        CANCELLED = "cancelled", "Cancelado"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="orders")
+    conversation = models.ForeignKey(Conversation, on_delete=models.PROTECT, related_name="orders")
+    status = models.CharField(max_length=24, choices=Status.choices, default=Status.PENDING)
+    items = models.JSONField(default=list, blank=True)
+    total = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    requested_for = models.CharField(max_length=200, blank=True)
+    notes = models.TextField(blank=True)
+    summary = models.TextField(blank=True)
+    source_message = models.ForeignKey(
+        "Message", null=True, blank=True, on_delete=models.SET_NULL, related_name="created_orders"
+    )
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="approved_orders",
+    )
+    decided_at = models.DateTimeField(null=True, blank=True)
+    notification_message_id = models.CharField(max_length=128, blank=True)
+    notification_fingerprint = models.CharField(max_length=64, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["conversation", "source_message"],
+                condition=models.Q(source_message__isnull=False),
+                name="unique_order_source_message",
+            )
+        ]
+
+    def clean(self):
+        if self.conversation_id and self.conversation.company_id != self.company_id:
+            raise ValidationError("Conversa pertence a outra empresa.")
+
+
+class OrderStatusEvent(models.Model):
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="status_events")
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="order_status_events")
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="order_status_events",
+    )
+    previous_status = models.CharField(max_length=24, choices=Order.Status.choices)
+    new_status = models.CharField(max_length=24, choices=Order.Status.choices)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def clean(self):
+        if self.order_id and self.order.company_id != self.company_id:
+            raise ValidationError("Pedido pertence a outra empresa.")
 
 
 def message_attachment_upload_path(instance, filename):

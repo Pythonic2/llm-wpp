@@ -10,6 +10,8 @@ Backend Django/DRF multiempresa para atendimento por WhatsApp Cloud API, respost
 - SDK oficial `google-genai` para geração e embeddings projetados em 768 dimensões, compatíveis com o índice HNSW.
 - Empresas, associações de usuário, múltiplos números com toggles de IA, contatos, conversas, mensagens, bases, documentos e chunks.
 - Conversas incluem `status`, `lead_stage` e `lead_data` para qualificação futura.
+- Pedidos identificados pela IA ficam pendentes até aprovação ou rejeição humana auditada no painel.
+- O Embedded Signup de coexistência prepara a conexão do WhatsApp Business App com a Cloud API sem migração automática; a ativação depende da aprovação da Meta como Tech Provider.
 - Cada empresa pode personalizar a persona, o tom e a abordagem da IA em Configurações; as regras de segurança e uso do contexto permanecem fixas no servidor.
 
 O isolamento é aplicado por `company` em todas as entidades, validação de relações, constraints compostas, filtro por associação no Admin e filtro obrigatório na busca vetorial. Superusuários veem tudo; usuários staff veem somente suas empresas.
@@ -61,6 +63,10 @@ e raciocínio são opcionais e configurados por `GEMINI_INPUT_COST_PER_MILLION`,
 os logs registram tokens e latência sem atribuir custo.
 
 Não coloque chaves no banco ou Git. Reinicie backend e worker ao alterar variáveis.
+
+Para o Embedded Signup, configure `META_APP_ID`, `META_EMBEDDED_SIGNUP_CONFIG_ID` e
+`WHATSAPP_TOKEN_ENCRYPTION_KEY`. A última deve ser uma chave Fernet estável e secreta;
+se ela for perdida ou trocada, os tokens por número não poderão ser recuperados.
 
 ## Biblioteca de mídias e áudio
 
