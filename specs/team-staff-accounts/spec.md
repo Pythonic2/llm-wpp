@@ -5,6 +5,7 @@ O proprietário ou administrador cadastra um funcionário com usuário e senha i
 
 ## Regras e cenários
 - O cadastro é atômico: se uma empresa for inválida ou não autorizada, nenhum usuário ou vínculo é criado.
+- Empresas com cobrança pendente, expirada ou suspensa não podem ser atribuídas a novos funcionários, inclusive por superusuário. A seleção de empresas no frontend pode listar espaços administrativos ainda indisponíveis; o servidor rejeita o cadastro com mensagem clara.
 - Nomes de usuário e e-mails são únicos sem diferenciar maiúsculas/minúsculas; conta existente não é sobrescrita.
 - O e-mail é opcional. Quando presente e o SMTP configurado, a notificação lista as empresas e credenciais iniciais. Falha no SMTP não desfaz a conta e é registrada sem credenciais.
 - A senha inicial pode ser simples, conforme definida pelo administrador; o login é limitado por taxa. Ela é guardada apenas com hash. A nova senha passa pelos validadores do Django e deve ser diferente da inicial.
@@ -18,6 +19,7 @@ O proprietário ou administrador cadastra um funcionário com usuário e senha i
 4. Sem e-mail não há tentativa de envio; com e-mail há notificação. Erro de SMTP não revela senha em logs.
 5. Login inicial sinaliza troca obrigatória e bloqueia dados; após trocar, a senha antiga falha e o acesso é liberado.
 6. O frontend mostra campos claros, seleção de empresas e formulário de troca de senha.
+7. Uma conta vinculada apenas a empresa indisponível recebe lista vazia, sem acesso a dados; a tela orienta a verificar a assinatura. O cadastro de novos funcionários impede esse vínculo.
 
 ## Impacto, falhas e recuperação
 Migration aditiva `saas.0016` cria tabela de estado de senha inicial; não altera usuários existentes. Aplicar antes da nova versão da API. A reversão da aplicação usa a imagem anterior mantendo a tabela; remover a tabela apagaria a obrigação de troca e não é recomendado. Em falha do SMTP, o administrador entrega a senha inicial por canal próprio. Não registrar nem retornar a senha em listagens.

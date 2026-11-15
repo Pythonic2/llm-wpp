@@ -19,6 +19,7 @@ from rest_framework.views import APIView
 
 from .api import _company_for_request
 from .api_serializers import UserSerializer
+from .billing import company_billing_available
 from .models import Membership, StaffPasswordState
 
 logger = logging.getLogger(__name__)
@@ -77,11 +78,13 @@ class StaffCreateView(APIView):
         username = values["username"]
         email = values.get("email", "").strip().lower()
         password = values["password"]
-        companies = [_company_for_request(request, company_id, "admin")[0] for company_id in values["company_ids"]]
         if email and (not settings.EMAIL_HOST_USER or not settings.EMAIL_HOST_PASSWORD or not settings.GESTTECH_FROM_EMAIL):
             raise ValidationError({"email": "Notificação por e-mail indisponível. Deixe o e-mail em branco ou configure o SMTP."})
         try:
             with transaction.atomic():
+                companies = [_company_for_request(request, company_id, "admin")[0] for company_id in values["company_ids"]]
+                if any(not company_billing_available(company) for company in companies):
+                    raise ValidationError({"company_ids": "A empresa precisa estar ativa para receber funcionários."})
                 if connection.vendor == "postgresql":
                     with connection.cursor() as cursor:
                         for identity in sorted({username.casefold(), email.casefold()} - {""}):

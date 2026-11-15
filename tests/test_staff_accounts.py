@@ -55,6 +55,19 @@ def test_staff_creation_rejects_cross_tenant_and_agent_without_partial_account(t
     assert denied.status_code == 403
 
 
+def test_superuser_cannot_assign_staff_to_unavailable_company(tenant_data):
+    company = tenant_data["company_b"]
+    company.billing_status = Company.BillingStatus.PENDING
+    company.save(update_fields=["billing_status"])
+    superuser = get_user_model().objects.create_superuser("support", password="test")
+    response = _admin_client(superuser).post(URL, {
+        "username": "pending-staff", "password": "1234", "company_ids": [str(company.pk)],
+    }, format="json")
+    assert response.status_code == 400, response.data
+    assert "company_ids" in response.data
+    assert not get_user_model().objects.filter(username="pending-staff").exists()
+
+
 def test_staff_creation_sends_notice_only_with_email(settings, tenant_data, django_capture_on_commit_callbacks):
     settings.EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
     settings.EMAIL_HOST_USER = "smtp@example.com"
