@@ -1,21 +1,30 @@
-# Preparação no Raspberry — 15/11/2026
+# Implantação no Raspberry — 15/11/2026
 
-Estado: **aguardando configuração para publicar tudo junto**, conforme escolha do usuário. Nenhuma migration nova foi aplicada; stacks e containers ativos não foram trocados.
+Estado: **publicado para testes com Asaas sandbox** em `https://crm.gestcloud.com.br`. A cobrança real permanece desativada (`ASAAS_ALLOW_PRODUCTION=false`). Cloud Run continua fora do escopo.
 
-## Preparado e verificado
+## Versão publicada
 
-- Raspberry acessível por SSH como `pi@192.168.0.6`. Backend/worker/front permanecem nas imagens `pi-embedded-20261115`; Redis permanece ativo.
-- Banco de produção com `saas.0013` aplicada; `0014_commercial_finance` e `0015_billing_onboarding` pendentes. Antes da preparação, havia 3 empresas, nenhum contato com `wa_id` vazio e 2 números ativos. Apenas contagens foram consultadas.
-- Imagens ARM64 locais construídas, sem push: backend `ghcr.io/pythonic2/llm-wpp:pi-gesttech-20261115-f1aaee`; frontend `ghcr.io/pythonic2/llm-wpp-frontend:pi-gesttech-20261115-4e651b`. Módulos Python compilaram e `nginx -t` passou em containers isolados.
-- Pacotes de código sem `.env` e backups dos arquivos Compose/ambiente guardados em `/home/pi/gesttech-predeploy-20261115` (diretório privado). Backup do esquema `crm` em `/home/pi/gesttech-predeploy-20261115/pre-deploy-crm.dump`, 227810 bytes, permissão `600`; `pg_restore --list` validou o formato. Foi usado `pg_dump` 18 em container temporário, compatível com o Neon PostgreSQL 18. O primeiro `pg_dump` 17 não alterou o banco e falhou por incompatibilidade de versão.
-- As imagens foram preparadas a partir do estado local de trabalho, incluindo arquivos ainda não commitados. Após esta preparação, o cadastro passou a verificar antecipadamente a presença de Asaas/Webhook/SMTP; **a imagem backend preparada não contém esse ajuste e deve ser reconstruída antes da implantação**. Tags e hashes dos pacotes identificam a preparação anterior.
+- Backend, worker e Celery Beat: `ghcr.io/pythonic2/llm-wpp:pi-billingfix-20261115-5c2f9b` (ARM64 local no Raspberry).
+- Frontend: `ghcr.io/pythonic2/llm-wpp-frontend:pi-billingfix-sandbox-20261115-caf9d8` (ARM64 local no Raspberry; banner visível de pagamentos simulados).
+- Banco Neon, esquema `crm`: `saas.0014_commercial_finance` e `saas.0015_billing_onboarding` aplicadas. `0013` já estava aplicada. Empresas existentes receberam o estado `legacy`.
+- Backup imediatamente anterior às migrations: `/home/pi/gesttech-predeploy-20261115/pre-deploy-crm.dump` (formato customizado, verificado por `pg_restore --list`, modo 600). Cópia do backup anterior em `pre-deploy-crm-initial.dump`.
+- Arquivos Compose e de ambiente anteriores preservados em `/home/pi/gesttech-predeploy-20261115/`. Credenciais de Asaas sandbox e Gmail estão apenas no `.env` local ignorado pelo Git e em arquivos privados `stack.env`/backup do Raspberry; os valores não estão neste documento.
+- Webhook Asaas sandbox habilitado para `https://crm.gestcloud.com.br/api/webhooks/asaas/`, versão 3, envio sequencial, 11 eventos. Token próprio separado da API key.
 
-## Pendências antes do deploy
+## Verificações executadas
 
-1. Configurar Asaas e SMTP em ambiente seguro, sem publicar credenciais: `ASAAS_API_KEY`, `ASAAS_WEBHOOK_AUTH_TOKEN`, `GESTTECH_PUBLIC_URL`, `GESTTECH_FROM_EMAIL`, `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `EMAIL_USE_TLS`. Atualmente nenhuma dessas variáveis está presente no backend do Raspberry.
-   - O `.env` local ignorado pelo Git recebeu URL sandbox, URL pública, remetente e usuário Gmail, host/porta STARTTLS e um token de Webhook novo. Depois, por pedido explícito do usuário, a chave sandbox do Asaas e a senha de aplicativo do Gmail foram configuradas apenas nesse arquivo local, com permissão `600`. Uma consulta autenticada de leitura ao Asaas sandbox passou; o Gmail autenticou e aceitou um e-mail de teste enviado para a própria conta. Nenhum desses valores foi copiado para este documento ou para o Raspberry.
-2. Validar e-mail transacional e fluxo completo com Asaas sandbox (checkout, Webhook, renovação, 7 dias, estorno) antes de habilitar cobrança real. Produção usa chave Asaas distinta da sandbox e exige opt-in explícito.
-3. Revisar e aplicar migrations `0014` e `0015` com a imagem nova; `0014` substitui a restrição de unicidade de contato por uma parcial e cria tabelas comerciais; `0015` cria tabelas de cobrança e marca empresas existentes como `legacy`.
-4. Atualizar Compose/stack.env do backend, worker, scheduler e frontend usando as tags locais e `pull_policy: never`, verificar saúde, HTTP e logs. O scheduler novo é necessário para a conciliação diária.
+- Testes locais: backend 111 testes completos, `manage.py check`, `makemigrations --check --dry-run`, `git diff --check`; frontend 25 testes, lint e build.
+- No Raspberry: serviços de backend, worker, scheduler, Redis e frontend em execução; worker alcança Redis; cache Redis compartilhado testado entre backend e worker; migrations 0013–0015 marcadas como aplicadas.
+- URL pública: `/` e `/signup` responderam 200; `/api/v1/auth/csrf/` respondeu 200 após a estabilização do backend; cadastro vazio com CSRF respondeu 400 JSON; webhook autenticado com evento inválido respondeu 400 JSON, sem gravar evento. Link `/invite/accept` respondeu 200. Bundle frontend contém formulário de convite, consentimento visível e catálogo.
+- Consulta à API Asaas sandbox mostrou um webhook ativo com 11 eventos. Autenticação SMTP Gmail e e-mail de teste para a própria conta foram validados na preparação.
 
-O usuário optou por aguardar a publicação completa. Nenhum passo da seção de pendências foi executado.
+## Pendências de validação
+
+- Executar uma compra com cartão de teste no Asaas sandbox e confirmar a sequência completa: checkout, webhook, ativação da empresa, renovação e carência de sete dias. Nenhuma compra de teste foi criada no banco de produção durante o deploy.
+- Validar visualmente as telas autenticadas com usuário real após atualização do navegador. O formulário de equipe agora convida novos funcionários por e-mail; o texto `teste` sozinho continua sem conta e precisa de e-mail para um convite novo.
+- Uma tentativa real de adicionar empresa no sandbox revelou que um usuário legado sem e-mail criava cliente Asaas sem e-mail e recebia HTTP 400 ao tentar criar checkout. A tentativa local ficou em `review`, sem ID de checkout Asaas. Um probe com o mesmo cliente reproduziu o erro `invalid_object` por e-mail ausente e não criou checkout. A correção exige e-mail de cobrança e permite retomar a mesma empresa/checkout apenas após confirmar por leitura que o cliente Asaas ainda está sem e-mail; consulte [legacy-billing-email-fix.md](legacy-billing-email-fix.md). A pessoa deve recarregar a página e informar o e-mail; nenhum e-mail foi presumido ou gravado por este deploy.
+- As stacks do Portainer guardam variáveis de tag antigas. Os manifestos locais em `/data/compose/203` e `/data/compose/205` foram atualizados para as tags publicadas, mas uma nova edição/reimplantação pela interface do Portainer pode sobrescrever esses arquivos com os valores antigos. Antes de usar “Update the stack”, alinhar no Portainer `APP_IMAGE_TAG=pi-billingfix-20261115-5c2f9b`, `FRONTEND_IMAGE_TAG=pi-billingfix-sandbox-20261115-caf9d8` e `APP_PULL_POLICY=never`/`FRONTEND_PULL_POLICY=never`.
+
+## Recuperação
+
+Se houver falha, voltar às imagens anteriores preservadas nos arquivos Compose/ambiente do diretório de backup. As migrations são aditivas; preservar as tabelas e eventos financeiros para conciliação em vez de reverter o banco. Se o webhook gerar divergência, desativá-lo no Asaas sandbox e reconciliar checkouts antes de reabrir cadastros.

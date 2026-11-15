@@ -7,7 +7,8 @@ from pathlib import Path
 from django.contrib.auth import authenticate, get_user_model, login, logout
 from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db import IntegrityError, transaction
+from django.core.validators import validate_email
+from django.db import IntegrityError, connection, transaction
 from django.db.models import Q
 from django.http import FileResponse
 from django.utils import timezone
@@ -20,6 +21,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from .api_serializers import (
@@ -61,6 +63,7 @@ from .meta import (
     verify_embedded_signup_assets,
 )
 from .billing import accessible_companies, assert_number_capacity, company_billing_available
+from .team_invites import queue_team_invite
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -121,6 +124,8 @@ class CsrfCookieView(APIView):
 
 class LoginView(APIView):
     permission_classes = (AllowAny,)
+    throttle_classes = (ScopedRateThrottle,)
+    throttle_scope = "login"
 
     @method_decorator(csrf_protect)
     def post(self, request):
@@ -238,6 +243,12 @@ class CompanyDetailView(APIView):
 class MembershipListCreateView(APIView):
     permission_classes = (IsAuthenticated,)
 
+    def get_throttles(self):
+        if self.request.method == "POST":
+            self.throttle_scope = "team_invite"
+            return [ScopedRateThrottle()]
+        return []
+
     def get(self, request, company_id):
         company, _ = _company_for_request(request, company_id)
         memberships = Membership.objects.filter(company=company).select_related("user").order_by("id")
@@ -253,24 +264,46 @@ class MembershipListCreateView(APIView):
         user_id = request.data.get("user_id")
         email = request.data.get("email")
         username = request.data.get("username")
-        if user_id:
-            member_user = generics.get_object_or_404(User, pk=user_id)
-        elif email:
-            member_user = User.objects.filter(email__iexact=str(email).strip()).first()
-        elif username:
-            member_user = User.objects.filter(username__iexact=str(username).strip()).first()
-        else:
-            raise ValidationError({"user_id": "Informe o ID, e-mail ou usuário de uma conta existente."})
-        if member_user is None:
-            raise ValidationError({"user_id": "Não foi encontrada uma conta com esses dados."})
-        membership, created = Membership.objects.get_or_create(
-            company=company,
-            user=member_user,
-            defaults={"role": role},
-        )
-        if not created:
-            raise ValidationError({"user_id": "Este usuário já é membro da empresa."})
-        return Response(MembershipSerializer(membership).data, status=status.HTTP_201_CREATED)
+        if not (user_id or email or username):
+            raise ValidationError({"user_id": "Informe o e-mail do funcionário ou um usuário existente."})
+        if email:
+            email = str(email).strip().lower()
+            try:
+                validate_email(email)
+            except DjangoValidationError:
+                raise ValidationError({"email": "Informe um e-mail válido."})
+            if len(email) > 254:
+                raise ValidationError({"email": "E-mail muito longo."})
+        with transaction.atomic():
+            if email and connection.vendor == "postgresql":
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", [email])
+            if user_id:
+                member_user = generics.get_object_or_404(User, pk=user_id)
+            elif email:
+                matches = list(User.objects.select_for_update().filter(email__iexact=email).order_by("pk")[:2])
+                if len(matches) > 1:
+                    raise ValidationError({"email": "Há mais de uma conta com este e-mail. Contate o suporte."})
+                member_user = matches[0] if matches else None
+                if member_user is None:
+                    preferred_username = email if len(email) <= 150 and not User.objects.filter(username__iexact=email).exists() else f"staff_{uuid.uuid4().hex}"
+                    member_user = User.objects.create_user(username=preferred_username, email=email, password=None, is_active=False)
+            else:
+                member_user = User.objects.filter(username__iexact=str(username).strip()).first()
+            if member_user is None:
+                raise ValidationError({"user_id": "Conta não encontrada. Para convidar alguém novo, informe o e-mail."})
+            if not member_user.is_active and (not member_user.email or member_user.has_usable_password()):
+                raise ValidationError({"email": "Esta conta ainda não pode aceitar convites. Contate o suporte."})
+            membership, created = Membership.objects.get_or_create(
+                company=company, user=member_user, defaults={"role": role},
+            )
+            if not created and member_user.is_active:
+                raise ValidationError({"user_id": "Este usuário já é membro da empresa."})
+            if not member_user.is_active:
+                if not settings.EMAIL_HOST_USER or not settings.EMAIL_HOST_PASSWORD or not settings.GESTTECH_PUBLIC_URL.startswith("https://"):
+                    raise ValidationError({"email": "Convites por e-mail indisponíveis no momento."})
+                queue_team_invite(membership.pk)
+        return Response({**MembershipSerializer(membership).data, "invited": not member_user.is_active}, status=status.HTTP_201_CREATED)
 
 
 class MembershipDetailView(APIView):

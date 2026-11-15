@@ -38,6 +38,8 @@ from .api import (
     OrderDecisionView,
 )
 from .webhooks import whatsapp_webhook
+from .team_invites import AcceptTeamInviteView
+from .staff_api import StaffCreateView, InitialPasswordView
 from .billing_api import (
     PublicSignupView, PublicCheckoutStatusView, ExtraCompanyCheckoutView,
     ExtraNumberCheckoutView, BillingQuotaView, BillingProfileStatusView, asaas_webhook,
@@ -53,6 +55,7 @@ from .commercial_api import (
 urlpatterns = [
     path("webhooks/asaas/", asaas_webhook, name="asaas-webhook"),
     path("v1/public/signup/", PublicSignupView.as_view(), name="api-public-signup"),
+    path("v1/public/team-invites/accept/", AcceptTeamInviteView.as_view(), name="api-team-invite-accept"),
     path("v1/public/verify-email/", PublicVerifyEmailView.as_view(), name="api-public-verify-email"),
     path("v1/public/resend-email/", PublicResendEmailView.as_view(), name="api-public-resend-email"),
     path("v1/public/checkouts/<uuid:token>/", PublicCheckoutStatusView.as_view(), name="api-public-checkout-status"),
@@ -79,6 +82,8 @@ urlpatterns = [
     path("v1/auth/logout/", LogoutView.as_view(), name="api-logout"),
     path("v1/auth/refresh/", RefreshView.as_view(), name="api-refresh"),
     path("v1/auth/me/", MeView.as_view(), name="api-me"),
+    path("v1/auth/initial-password/", InitialPasswordView.as_view(), name="api-initial-password"),
+    path("v1/team/staff/", StaffCreateView.as_view(), name="api-team-staff"),
     path("v1/companies/", CompanyListView.as_view(), name="api-companies"),
     path("v1/companies/<uuid:company_id>/", CompanyDetailView.as_view(), name="api-company"),
     path(

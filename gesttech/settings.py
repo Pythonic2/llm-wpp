@@ -41,7 +41,8 @@ MIDDLEWARE = [
     "saas.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware", "django.middleware.csrf.CsrfViewMiddleware",
-    "django.contrib.auth.middleware.AuthenticationMiddleware", "django.contrib.messages.middleware.MessageMiddleware",
+    "django.contrib.auth.middleware.AuthenticationMiddleware", "saas.middleware.InitialPasswordMiddleware",
+    "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 ROOT_URLCONF = "gesttech.urls"
@@ -113,6 +114,15 @@ REST_FRAMEWORK = {
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://redis:6379/0")
 CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", CELERY_BROKER_URL)
 CELERY_TASK_ALWAYS_EAGER = os.getenv("CELERY_TASK_ALWAYS_EAGER", "false").lower() == "true"
+DJANGO_CACHE_URL = os.getenv("DJANGO_CACHE_URL", "").strip()
+if DJANGO_CACHE_URL:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": DJANGO_CACHE_URL,
+            "KEY_PREFIX": "gesttech",
+        },
+    }
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_CHAT_MODEL = os.environ["GEMINI_CHAT_MODEL"]
 GEMINI_EMBEDDING_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
@@ -150,7 +160,7 @@ EMAIL_PORT = int(os.getenv("EMAIL_PORT", "25"))
 EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
 EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS")
-REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"] = {"public_signup": "5/hour", "billing_purchase": "10/hour"}
+REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"] = {"public_signup": "5/hour", "billing_purchase": "10/hour", "team_invite": "30/hour", "team_invite_accept": "30/hour", "team_staff_create": "20/hour", "login": "30/hour"}
 CELERY_BEAT_SCHEDULE = {
     "reconcile-asaas-billing-daily": {
         "task": "saas.tasks.reconcile_asaas_billing",

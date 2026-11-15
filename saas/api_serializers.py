@@ -22,9 +22,14 @@ User = get_user_model()
 
 
 class UserSerializer(serializers.ModelSerializer):
+    must_change_password = serializers.SerializerMethodField()
+
+    def get_must_change_password(self, user):
+        return getattr(getattr(user, "staff_password_state", None), "must_change_password", False)
+
     class Meta:
         model = User
-        fields = ("id", "username", "email", "first_name", "last_name")
+        fields = ("id", "username", "email", "first_name", "last_name", "must_change_password")
 
 
 class MembershipSerializer(serializers.ModelSerializer):

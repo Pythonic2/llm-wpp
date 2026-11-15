@@ -55,7 +55,15 @@ def ensure_customer(profile):
     """Reuse the Asaas customer by local ID; look up externalReference before POST retries."""
     with transaction.atomic():
         profile = BillingCustomer.objects.select_for_update().get(pk=profile.pk)
+        if not profile.user.email:
+            raise BillingProviderError("Informe um e-mail de cobrança antes de continuar.")
         if profile.asaas_customer_id:
+            client = AsaasClient()
+            customer = client.request("GET", f"/customers/{profile.asaas_customer_id}")
+            if str(customer.get("email") or "").strip().lower() != profile.user.email.lower():
+                updated = client.request("PUT", f"/customers/{profile.asaas_customer_id}", json={"email": profile.user.email})
+                if str(updated.get("email") or "").strip().lower() != profile.user.email.lower():
+                    raise BillingProviderError("E-mail de cobrança não confirmado no Asaas.")
             return profile.asaas_customer_id
         client = AsaasClient()
         reference = f"gesttech-user-{profile.user_id}"

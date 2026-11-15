@@ -57,6 +57,12 @@ class Membership(models.Model):
         constraints = [models.UniqueConstraint(fields=["company", "user"], name="unique_company_user")]
 
 
+class StaffPasswordState(models.Model):
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="staff_password_state")
+    must_change_password = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
 class WhatsAppNumber(models.Model):
     company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="whatsapp_numbers")
     phone_number_id = models.CharField(max_length=64, unique=True, help_text="ID do número na Meta")

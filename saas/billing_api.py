@@ -115,10 +115,12 @@ class SignupInput(BillingProfileInput):
 class ExtraCompanyInput(serializers.Serializer):
     company_name = serializers.CharField(max_length=160)
     billing_profile = BillingProfileInput(required=False)
+    billing_email = serializers.EmailField(max_length=254, required=False)
 
 
 class ExtraNumberInput(serializers.Serializer):
     billing_profile = BillingProfileInput(required=False)
+    billing_email = serializers.EmailField(max_length=254, required=False)
 
 
 def _new_company(name):
@@ -249,6 +251,57 @@ def _owner(request):
         raise PermissionDenied("Somente o proprietário pode contratar recursos.")
 
 
+def _set_billing_email(user, email):
+    if user.email:
+        return
+    if not email:
+        raise ValidationError({"billing_email": "Informe o e-mail de cobrança para continuar."})
+    email = email.strip().lower()
+    if User.objects.filter(email__iexact=email).exclude(pk=user.pk).exists() or User.objects.filter(username__iexact=email).exclude(pk=user.pk).exists():
+        raise ValidationError({"billing_email": "Este e-mail já está vinculado a outra conta."})
+    user.email = email
+    user.save(update_fields=["email"])
+
+
+def _recover_email_review(user, *, kind, request_key, request_hash, billing_email, company_name=None, company_id=None):
+    """Retry only when Asaas still has no email, the known definitive validation failure."""
+    query = BillingCheckout.objects.select_for_update().filter(
+        user=user, kind=kind, status=BillingCheckout.Status.REVIEW,
+        asaas_checkout_id__isnull=True,
+    )
+    if company_name is not None:
+        query = query.filter(company__name=company_name)
+    if company_id is not None:
+        query = query.filter(company_id=company_id)
+    with transaction.atomic():
+        checkout = query.order_by("-created_at").first()
+        if checkout is None:
+            if company_name is not None and BillingCheckout.objects.filter(
+                user=user, kind=kind, status=BillingCheckout.Status.REVIEW,
+                asaas_checkout_id__isnull=True,
+            ).exists():
+                raise ValidationError({"detail": "Há uma compra de empresa em análise. Retome com o mesmo nome ou contate o suporte."})
+            return None
+        if BillingCheckout.objects.filter(user=user, request_key=request_key).exclude(pk=checkout.pk).exists():
+            raise ValidationError({"Idempotency-Key": "Chave já usada em outra compra."})
+        profile = BillingCustomer.objects.filter(user=user).first()
+        if profile is None or not profile.asaas_customer_id:
+            raise ValidationError({"detail": "Compra em análise. Contate o suporte antes de tentar novamente."})
+        try:
+            customer = AsaasClient().request("GET", f"/customers/{profile.asaas_customer_id}")
+        except BillingProviderError:
+            raise ValidationError({"detail": "Não foi possível conciliar a compra no Asaas. Tente mais tarde."})
+        if str(customer.get("email") or "").strip():
+            raise ValidationError({"detail": "Compra em análise. Contate o suporte antes de tentar novamente."})
+        _set_billing_email(user, billing_email)
+        checkout.request_key = request_key
+        checkout.request_hash = request_hash
+        checkout.checkout_started_at = None
+        checkout.status = BillingCheckout.Status.PENDING
+        checkout.save(update_fields=["request_key", "request_hash", "checkout_started_at", "status", "updated_at"])
+        return _provision_response(checkout)
+
+
 def _profile_for_user(user, values):
     profile = BillingCustomer.objects.filter(user=user).first()
     if profile:
@@ -284,11 +337,19 @@ class ExtraCompanyCheckoutView(APIView):
         values = serializer.validated_data
         request_key = _request_key(request)
         request_hash = hashlib.sha256(json.dumps(request.data, sort_keys=True, default=str).encode()).hexdigest()
+        recovered = _recover_email_review(
+            request.user, kind=BillingCheckout.Kind.EXTRA_COMPANY,
+            request_key=request_key, request_hash=request_hash,
+            billing_email=values.get("billing_email"), company_name=values["company_name"],
+        )
+        if recovered is not None:
+            return recovered
         existing = _existing_request(request.user, request_key, request_hash)
         if existing:
             return Response(_response(existing))
         try:
             with transaction.atomic():
+                _set_billing_email(request.user, values.get("billing_email"))
                 _profile_for_user(request.user, values.get("billing_profile"))
                 company = _new_company(values["company_name"])
                 Membership.objects.create(user=request.user, company=company, role=Membership.Role.OWNER)
@@ -308,7 +369,7 @@ class BillingProfileStatusView(APIView):
     permission_classes = (IsAuthenticated,)
 
     def get(self, request):
-        return Response({"configured": BillingCustomer.objects.filter(user=request.user).exists()})
+        return Response({"configured": BillingCustomer.objects.filter(user=request.user).exists(), "email_required": not bool(request.user.email)})
 
 
 class ExtraNumberCheckoutView(APIView):
@@ -327,11 +388,19 @@ class ExtraNumberCheckoutView(APIView):
         serializer.is_valid(raise_exception=True)
         request_key = _request_key(request)
         request_hash = hashlib.sha256(json.dumps(request.data, sort_keys=True, default=str).encode()).hexdigest()
+        recovered = _recover_email_review(
+            request.user, kind=BillingCheckout.Kind.EXTRA_NUMBER,
+            request_key=request_key, request_hash=request_hash,
+            billing_email=serializer.validated_data.get("billing_email"), company_id=company_id,
+        )
+        if recovered is not None:
+            return recovered
         existing = _existing_request(request.user, request_key, request_hash)
         if existing:
             return Response(_response(existing))
         try:
             with transaction.atomic():
+                _set_billing_email(request.user, serializer.validated_data.get("billing_email"))
                 _profile_for_user(request.user, serializer.validated_data.get("billing_profile"))
                 checkout = BillingCheckout.objects.create(
                     user=request.user, company=company, kind=BillingCheckout.Kind.EXTRA_NUMBER,

@@ -5,6 +5,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
+from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.core import signing
 from django.urls import reverse
@@ -28,13 +29,20 @@ def asaas_mock(settings):
     settings.EMAIL_HOST_USER = "noreply@example.com"
     settings.EMAIL_HOST_PASSWORD = "test-only-password"
     calls = []
+    customer = {"id": "cus_sandbox_test", "email": ""}
 
     def request(_self, method, path, *, json=None, params=None):
         calls.append((method, path, json, params))
         if method == "GET" and path == "/customers":
             return {"data": []}
         if method == "POST" and path == "/customers":
-            return {"id": "cus_sandbox_test"}
+            customer["email"] = json.get("email", "")
+            return customer.copy()
+        if method == "GET" and path == "/customers/cus_sandbox_test":
+            return customer.copy()
+        if method == "PUT" and path == "/customers/cus_sandbox_test":
+            customer["email"] = json["email"]
+            return customer.copy()
         if method == "POST" and path == "/checkouts":
             return {"id": str(uuid.uuid4())}
         raise AssertionError((method, path))
@@ -50,6 +58,22 @@ def signup_payload():
         "postal_code": "01310-000", "address": "Avenida Paulista", "address_number": "100",
         "province": "Bela Vista", "city_name": "São Paulo", "state": "SP",
     }
+
+
+def legacy_owner():
+    user = get_user_model().objects.create_user("legacy-owner", password="test-password", email="")
+    company = Company.objects.create(name="Empresa legada", slug="empresa-legada")
+    Membership.objects.create(user=user, company=company, role=Membership.Role.OWNER)
+    return user, company
+
+
+def legacy_profile(user, *, asaas_customer_id=""):
+    return BillingCustomer.objects.create(
+        user=user, full_name="Cliente Legado", cpf_cnpj="52998224725", mobile_phone="11999990000",
+        postal_code="01310000", address="Avenida Paulista", address_number="100",
+        province="Bela Vista", city_name="São Paulo", state="SP",
+        asaas_customer_id=asaas_customer_id,
+    )
 
 
 def post_json(client, url, payload, **headers):
@@ -175,6 +199,93 @@ def test_paid_extra_company_is_not_visible_until_webhook(client, asaas_mock):
     companies = client.get(reverse("api-companies")).json()
     assert len(companies) == 2
     assert {item["name"] for item in companies} == {"Ateliê da Maria", "Segunda Empresa"}
+
+
+@pytest.mark.django_db
+def test_legacy_extra_company_requires_billing_email_before_creating_company(client, asaas_mock):
+    user, _ = legacy_owner()
+    client.force_login(user)
+    profile = signup_payload()
+    profile = {key: profile[key] for key in (
+        "full_name", "cpf_cnpj", "mobile_phone", "postal_code", "address", "address_number",
+        "province", "city_name", "state",
+    )}
+    before = Company.objects.count()
+    missing = post_json(client, reverse("api-billing-extra-company"), {
+        "company_name": "Empresa extra", "billing_profile": profile,
+    }, HTTP_IDEMPOTENCY_KEY="legacy-extra-missing")
+    assert missing.status_code == 400
+    assert Company.objects.count() == before
+    assert not BillingCustomer.objects.filter(user=user).exists()
+    assert client.get(reverse("api-billing-profile-status")).json()["email_required"] is True
+    created = post_json(client, reverse("api-billing-extra-company"), {
+        "company_name": "Empresa extra", "billing_profile": profile,
+        "billing_email": "legacy@example.com",
+    }, HTTP_IDEMPOTENCY_KEY="legacy-extra-valid")
+    assert created.status_code == 201, created.content
+    user.refresh_from_db()
+    assert user.email == "legacy@example.com"
+    assert Company.objects.count() == before + 1
+    assert client.get(reverse("api-billing-profile-status")).json()["email_required"] is False
+    customer_create = next(call for call in asaas_mock if call[:2] == ("POST", "/customers"))
+    assert customer_create[2]["email"] == "legacy@example.com"
+
+
+@pytest.mark.django_db
+def test_review_from_missing_asaas_email_reuses_checkout_and_company(client, asaas_mock):
+    user, _ = legacy_owner()
+    profile = legacy_profile(user, asaas_customer_id="cus_sandbox_test")
+    company = Company.objects.create(name="Empresa extra", slug="empresa-extra")
+    Membership.objects.create(user=user, company=company, role=Membership.Role.OWNER)
+    checkout = BillingCheckout.objects.create(
+        user=user, company=company, kind=BillingCheckout.Kind.EXTRA_COMPANY,
+        status=BillingCheckout.Status.REVIEW, amount=Decimal("199.90"),
+        request_key="old-key", request_hash="old-hash", checkout_started_at=timezone.now(),
+    )
+    before = Company.objects.count()
+    client.force_login(user)
+    result = post_json(client, reverse("api-billing-extra-company"), {
+        "company_name": "Empresa extra", "billing_email": "legacy@example.com",
+    }, HTTP_IDEMPOTENCY_KEY="recovered-key")
+    assert result.status_code == 201, result.content
+    assert result.json()["id"] == str(checkout.pk)
+    assert Company.objects.count() == before
+    checkout.refresh_from_db()
+    profile.refresh_from_db()
+    assert checkout.status == BillingCheckout.Status.PENDING
+    assert checkout.asaas_checkout_id
+    assert profile.asaas_customer_id == "cus_sandbox_test"
+    assert ("PUT", "/customers/cus_sandbox_test") in [(method, path) for method, path, _, _ in asaas_mock]
+    repeated = post_json(client, reverse("api-billing-extra-company"), {
+        "company_name": "Empresa extra", "billing_email": "legacy@example.com",
+    }, HTTP_IDEMPOTENCY_KEY="recovered-key")
+    assert repeated.status_code == 200
+    assert Company.objects.count() == before
+
+
+@pytest.mark.django_db
+def test_review_with_asaas_email_stays_blocked_for_manual_reconciliation(client, asaas_mock):
+    user, _ = legacy_owner()
+    legacy_profile(user, asaas_customer_id="cus_sandbox_test")
+    company = Company.objects.create(name="Empresa extra", slug="empresa-extra")
+    Membership.objects.create(user=user, company=company, role=Membership.Role.OWNER)
+    BillingCheckout.objects.create(
+        user=user, company=company, kind=BillingCheckout.Kind.EXTRA_COMPANY,
+        status=BillingCheckout.Status.REVIEW, amount=Decimal("199.90"),
+        request_key="old-key", request_hash="old-hash", checkout_started_at=timezone.now(),
+    )
+    client.force_login(user)
+    def known_email(_self, method, path, *, json=None, params=None):
+        assert (method, path) == ("GET", "/customers/cus_sandbox_test")
+        return {"id": "cus_sandbox_test", "email": "existing@example.com"}
+    with patch("saas.billing.AsaasClient.request", known_email):
+        response = post_json(client, reverse("api-billing-extra-company"), {
+            "company_name": "Empresa extra", "billing_email": "legacy@example.com",
+        }, HTTP_IDEMPOTENCY_KEY="new-key")
+    assert response.status_code == 400
+    assert BillingCheckout.objects.filter(kind=BillingCheckout.Kind.EXTRA_COMPANY).count() == 1
+    user.refresh_from_db()
+    assert user.email == ""
 
 
 @pytest.mark.django_db
