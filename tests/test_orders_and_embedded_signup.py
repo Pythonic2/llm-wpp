@@ -56,23 +56,35 @@ def test_human_approval_is_audited_and_not_repeatable(send, client, tenant_data)
 
 
 @pytest.mark.django_db
+@patch("saas.api.request_coexistence_sync")
+@patch("saas.api.register_cloud_api_number")
 @patch("saas.api.subscribe_app_to_waba")
-@patch("saas.api.verify_coexistence_assets")
+@patch("saas.api.verify_embedded_signup_assets")
 @patch("saas.api.exchange_embedded_signup_code", return_value="customer-token")
-def test_embedded_signup_requires_coexistence_event(exchange, verify, subscribe, client, tenant_data, settings):
+def test_embedded_signup_accepts_coexistence_without_phone_id(exchange, verify, subscribe, register, sync, client, tenant_data, settings):
     settings.WHATSAPP_TOKEN_ENCRYPTION_KEY = Fernet.generate_key().decode()
-    verify.return_value = {"id": "coex-number", "display_phone_number": "+5511999999999"}
+    settings.META_APP_ID = "app-id"
+    settings.META_EMBEDDED_SIGNUP_CONFIG_ID = "config-id"
+    settings.WHATSAPP_APP_SECRET = "app-secret"
+    verify.return_value = ({"id": "123", "name": "Empresa"}, {"id": "456", "display_phone_number": "+5511999999999"})
+    sync.side_effect = ["contacts-request", "history-request"]
     client.force_login(tenant_data["user"])
     url = f"/api/v1/companies/{tenant_data['company'].pk}/whatsapp/embedded-signup/complete/"
+    config = client.get(f"/api/v1/companies/{tenant_data['company'].pk}/whatsapp/embedded-signup/config/").json()
     rejected = client.post(url, {
-        "code": "code", "waba_id": "waba", "phone_number_id": "coex-number", "event": "FINISH",
+        "code": "code", "waba_id": "123", "event": "CANCEL", "state": config["state"],
     }, content_type="application/json")
     assert rejected.status_code == 400
     assert not exchange.called
     accepted = client.post(url, {
-        "code": "code", "waba_id": "waba", "phone_number_id": "coex-number",
-        "event": "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING",
+        "code": "code", "waba_id": "123", "event": "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING",
+        "state": config["state"],
     }, content_type="application/json")
     assert accepted.status_code == 201
     assert accepted.json()["connection_mode"] == "coexistence"
-    subscribe.assert_called_once_with("customer-token", "waba")
+    assert "customer-token" not in str(accepted.json())
+    verify.assert_called_once_with("customer-token", "123", "", True)
+    subscribe.assert_called_once_with("customer-token", "123")
+    register.assert_not_called()
+    assert sync.call_count == 2
+    assert accepted.json()["contacts_sync_request_id"] == "contacts-request"

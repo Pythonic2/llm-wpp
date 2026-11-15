@@ -12,7 +12,8 @@ from django.db import transaction
 from django.utils import timezone
 from redis.exceptions import LockError
 
-from .models import Company, Conversation, KnowledgeChunk, KnowledgeDocument, MediaAsset, Message, Order
+from .models import CoexistenceWebhookBatch, Company, Conversation, KnowledgeChunk, KnowledgeDocument, MediaAsset, Message, Order
+from .coexistence import process_app_history
 from .services import (
     answer_with_rag,
     analyze_sales_conversation,
@@ -32,6 +33,34 @@ from .services import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@shared_task(autoretry_for=(Exception,), retry_backoff=True, max_retries=8)
+def reconcile_asaas_checkout(checkout_id):
+    from .billing import reconcile_checkout
+    return reconcile_checkout(checkout_id)
+
+
+@shared_task
+def reconcile_asaas_billing():
+    """Daily safety net for delayed or missed renewal Webhooks."""
+    from .models import BillingCheckout
+    for checkout_id in BillingCheckout.objects.filter(
+        status=BillingCheckout.Status.PAID,
+    ).values_list("pk", flat=True).iterator(chunk_size=200):
+        reconcile_asaas_checkout.delay(str(checkout_id))
+
+
+@shared_task(autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
+def process_coexistence_history(batch_id):
+    with transaction.atomic():
+        batch = CoexistenceWebhookBatch.objects.select_for_update().select_related("number__company").get(pk=batch_id)
+        if batch.processed_at:
+            return
+        process_app_history(batch.number, batch.payload)
+        batch.payload = {}
+        batch.processed_at = timezone.now()
+        batch.save(update_fields=["payload", "processed_at"])
 
 
 @shared_task(autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
@@ -419,6 +448,7 @@ def send_selected_media(self, incoming_message_id, asset_id):
 
 @shared_task(bind=True, max_retries=120)
 def answer_inbound_message(self, message_id):
+    from .billing import number_billing_available
     incoming = Message.objects.select_related("conversation__whatsapp_number", "conversation__contact").get(pk=message_id)
     lock = conversation_ai_lock(incoming.company_id, incoming.conversation_id)
     if not lock.acquire(blocking=False):
@@ -443,6 +473,10 @@ def answer_inbound_message(self, message_id):
             raise self.retry(countdown=2)
 
         conversation, number = incoming.conversation, incoming.conversation.whatsapp_number
+        if not number_billing_available(number):
+            incoming.ai_status = Message.AIStatus.SKIPPED
+            incoming.save(update_fields=["ai_status"])
+            return
         if incoming.message_type in {"image", "document"}:
             forward_inbound_media_to_notification.delay(incoming.pk)
         if conversation.ai_paused or not number.ai_enabled or not number.is_active or incoming.message_type not in {"text", "audio", "image", "document"}:
@@ -529,6 +563,7 @@ def answer_inbound_message(self, message_id):
                 conversation.ai_paused
                 or not conversation.whatsapp_number.ai_enabled
                 or not conversation.whatsapp_number.is_active
+                or not number_billing_available(conversation.whatsapp_number)
             ):
                 incoming.ai_status = Message.AIStatus.SKIPPED
                 incoming.ai_error = ""
@@ -563,7 +598,8 @@ def answer_inbound_message(self, message_id):
             raise
 
         outgoing.external_id, outgoing.status = external_id, Message.Status.SENT
-        outgoing.save(update_fields=["external_id", "status"])
+        outgoing.sent_at = timezone.now()
+        outgoing.save(update_fields=["external_id", "status", "sent_at"])
         conversation.last_message_at = outgoing.created_at
         conversation.save(update_fields=["last_message_at"])
         incoming.ai_status, incoming.ai_error = Message.AIStatus.COMPLETED, ""

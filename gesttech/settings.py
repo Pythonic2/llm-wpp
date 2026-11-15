@@ -139,3 +139,21 @@ WHATSAPP_ACCESS_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN", "")
 META_APP_ID = os.getenv("META_APP_ID", "")
 META_EMBEDDED_SIGNUP_CONFIG_ID = os.getenv("META_EMBEDDED_SIGNUP_CONFIG_ID", "")
 WHATSAPP_TOKEN_ENCRYPTION_KEY = os.getenv("WHATSAPP_TOKEN_ENCRYPTION_KEY", "")
+ASAAS_API_KEY = os.getenv("ASAAS_API_KEY", "")
+ASAAS_BASE_URL = os.getenv("ASAAS_BASE_URL", "https://api-sandbox.asaas.com/v3")
+ASAAS_ALLOW_PRODUCTION = env_bool("ASAAS_ALLOW_PRODUCTION")
+ASAAS_WEBHOOK_AUTH_TOKEN = os.getenv("ASAAS_WEBHOOK_AUTH_TOKEN", "")
+GESTTECH_PUBLIC_URL = os.getenv("GESTTECH_PUBLIC_URL", "http://localhost:5173" if DEBUG else "")
+GESTTECH_FROM_EMAIL = os.getenv("GESTTECH_FROM_EMAIL", "")
+EMAIL_HOST = os.getenv("EMAIL_HOST", "localhost")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "25"))
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS")
+REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"] = {"public_signup": "5/hour", "billing_purchase": "10/hour"}
+CELERY_BEAT_SCHEDULE = {
+    "reconcile-asaas-billing-daily": {
+        "task": "saas.tasks.reconcile_asaas_billing",
+        "schedule": 24 * 60 * 60,
+    },
+}

@@ -12,7 +12,7 @@ services:
 
   backend:
     image: "ghcr.io/pythonic2/llm-wpp:${APP_IMAGE_TAG:?Defina APP_IMAGE_TAG no Portainer (ex.: sha-abc123...)}"
-    pull_policy: always
+    pull_policy: ${APP_PULL_POLICY:-always}
     restart: unless-stopped
     environment:
       DB_NAME: ${DB_NAME:?Defina DB_NAME no Portainer}
@@ -66,8 +66,22 @@ services:
       GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
       WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
       WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
+      META_APP_ID: ${META_APP_ID:-}
+      META_EMBEDDED_SIGNUP_CONFIG_ID: ${META_EMBEDDED_SIGNUP_CONFIG_ID:-}
+      WHATSAPP_TOKEN_ENCRYPTION_KEY: ${WHATSAPP_TOKEN_ENCRYPTION_KEY:-}
       WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
       WHATSAPP_API_VERSION: ${WHATSAPP_API_VERSION:-v26.0}
+      ASAAS_API_KEY: ${ASAAS_API_KEY:-}
+      ASAAS_BASE_URL: ${ASAAS_BASE_URL:-https://api-sandbox.asaas.com/v3}
+      ASAAS_ALLOW_PRODUCTION: ${ASAAS_ALLOW_PRODUCTION:-false}
+      ASAAS_WEBHOOK_AUTH_TOKEN: ${ASAAS_WEBHOOK_AUTH_TOKEN:-}
+      GESTTECH_PUBLIC_URL: ${GESTTECH_PUBLIC_URL:-}
+      GESTTECH_FROM_EMAIL: ${GESTTECH_FROM_EMAIL:-}
+      EMAIL_HOST: ${EMAIL_HOST:-localhost}
+      EMAIL_PORT: ${EMAIL_PORT:-25}
+      EMAIL_HOST_USER: ${EMAIL_HOST_USER:-}
+      EMAIL_HOST_PASSWORD: ${EMAIL_HOST_PASSWORD:-}
+      EMAIL_USE_TLS: ${EMAIL_USE_TLS:-false}
     ports:
       - "8123:8123"
     volumes:
@@ -80,7 +94,7 @@ services:
 
   worker:
     image: "ghcr.io/pythonic2/llm-wpp:${APP_IMAGE_TAG:?Defina APP_IMAGE_TAG no Portainer (ex.: sha-abc123...)}"
-    pull_policy: always
+    pull_policy: ${APP_PULL_POLICY:-always}
     command: .venv/bin/celery -A gesttech worker -l info --concurrency=${CELERY_CONCURRENCY:-2}
     restart: unless-stopped
     environment:
@@ -132,8 +146,28 @@ services:
       GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
       WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
       WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
+      META_APP_ID: ${META_APP_ID:-}
+      META_EMBEDDED_SIGNUP_CONFIG_ID: ${META_EMBEDDED_SIGNUP_CONFIG_ID:-}
+      WHATSAPP_TOKEN_ENCRYPTION_KEY: ${WHATSAPP_TOKEN_ENCRYPTION_KEY:-}
       WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
       WHATSAPP_API_VERSION: ${WHATSAPP_API_VERSION:-v26.0}
+      ASAAS_API_KEY: ${ASAAS_API_KEY:-}
+      ASAAS_BASE_URL: ${ASAAS_BASE_URL:-https://api-sandbox.asaas.com/v3}
+      ASAAS_ALLOW_PRODUCTION: ${ASAAS_ALLOW_PRODUCTION:-false}
+      ASAAS_WEBHOOK_AUTH_TOKEN: ${ASAAS_WEBHOOK_AUTH_TOKEN:-}
+      GESTTECH_PUBLIC_URL: ${GESTTECH_PUBLIC_URL:-}
+      GESTTECH_FROM_EMAIL: ${GESTTECH_FROM_EMAIL:-}
+      EMAIL_HOST: ${EMAIL_HOST:-localhost}
+      EMAIL_PORT: ${EMAIL_PORT:-25}
+      EMAIL_HOST_USER: ${EMAIL_HOST_USER:-}
+      EMAIL_HOST_PASSWORD: ${EMAIL_HOST_PASSWORD:-}
+      EMAIL_USE_TLS: ${EMAIL_USE_TLS:-false}
+    networks:
+      - pi_default
+  billing-scheduler:
+    extends:
+      service: worker
+    command: .venv/bin/celery -A gesttech beat -l info
     volumes:
       - media_data:/app/media
     depends_on:

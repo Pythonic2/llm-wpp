@@ -14,9 +14,24 @@ Não diga nem insinue que você consultou documentos, um sistema, uma base de co
 
 
 class Company(models.Model):
+    class BillingStatus(models.TextChoices):
+        LEGACY = "legacy", "Conta existente"
+        PENDING = "pending", "Aguardando pagamento"
+        ACTIVE = "active", "Ativa"
+        SUSPENDED = "suspended", "Suspensa"
+
+    class BusinessProfile(models.TextChoices):
+        PRODUCTS = "products", "Produtos"
+        SERVICES = "services", "Serviços"
+        BOTH = "both", "Produtos e serviços"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=160)
     slug = models.SlugField(unique=True)
+    business_profile = models.CharField(max_length=16, choices=BusinessProfile.choices, blank=True)
+    billing_status = models.CharField(max_length=12, choices=BillingStatus.choices, default=BillingStatus.LEGACY)
+    estimated_tax_percent = models.DecimalField(max_digits=6, decimal_places=3, null=True, blank=True)
+    desired_margin_percent = models.DecimalField(max_digits=6, decimal_places=3, null=True, blank=True)
     ai_instructions = models.TextField(default=DEFAULT_AI_INSTRUCTIONS, max_length=8000)
     hot_lead_notifications_enabled = models.BooleanField(default=False)
     hot_lead_notification_phone = models.CharField(
@@ -47,27 +62,59 @@ class WhatsAppNumber(models.Model):
     phone_number_id = models.CharField(max_length=64, unique=True, help_text="ID do número na Meta")
     display_phone_number = models.CharField(max_length=32)
     business_account_id = models.CharField(max_length=64, blank=True)
+    business_account_name = models.CharField(max_length=160, blank=True)
     access_token_encrypted = models.TextField(blank=True, editable=False)
     connection_mode = models.CharField(max_length=24, default="manual")
     connected_at = models.DateTimeField(null=True, blank=True)
     connection_error = models.TextField(blank=True)
+    connection_state = models.CharField(max_length=24, default="connected")
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+    history_sync_requested_at = models.DateTimeField(null=True, blank=True)
+    contacts_sync_request_id = models.CharField(max_length=128, blank=True)
+    history_sync_request_id = models.CharField(max_length=128, blank=True)
     ai_enabled = models.BooleanField(default=True)
+    pause_ai_on_app_echo = models.BooleanField(default=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self): return f"{self.display_phone_number} — {self.company}"
 
 
+class EmbeddedSignupAttempt(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    company = models.ForeignKey(Company, on_delete=models.CASCADE)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    expires_at = models.DateTimeField()
+    consumed_at = models.DateTimeField(null=True, blank=True)
+    standard_migration_consent_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class WhatsAppBusinessAccount(models.Model):
+    business_account_id = models.CharField(max_length=64, primary_key=True)
+    company = models.ForeignKey(Company, on_delete=models.CASCADE)
+    name = models.CharField(max_length=160, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class CoexistenceWebhookBatch(models.Model):
+    fingerprint = models.CharField(max_length=64, unique=True)
+    number = models.ForeignKey(WhatsAppNumber, on_delete=models.CASCADE)
+    payload = models.JSONField()
+    processed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
 class Contact(models.Model):
     company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="contacts")
-    wa_id = models.CharField(max_length=64)
+    wa_id = models.CharField(max_length=64, blank=True, default="")
     name = models.CharField(max_length=160, blank=True)
     phone = models.CharField(max_length=32, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     class Meta:
-        constraints = [models.UniqueConstraint(fields=["company", "wa_id"], name="unique_company_contact")]
+        constraints = [models.UniqueConstraint(fields=["company", "wa_id"], condition=~models.Q(wa_id=""), name="unique_company_contact")]
 
     def __str__(self): return self.name or self.wa_id
 
@@ -114,6 +161,7 @@ class Conversation(models.Model):
     ai_paused_at = models.DateTimeField(null=True, blank=True)
     assigned_to = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="assigned_conversations")
     last_message_at = models.DateTimeField(null=True, blank=True)
+    first_eligible_inbound_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     class Meta:
         constraints = [models.UniqueConstraint(fields=["company", "whatsapp_number", "contact"], name="unique_number_contact_conversation")]
@@ -228,6 +276,7 @@ class Message(models.Model):
     attachment_error = models.TextField(blank=True)
     transcription = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
 
     def clean(self):
         if self.conversation_id and self.conversation.company_id != self.company_id: raise ValidationError("Conversa pertence a outra empresa.")
@@ -377,3 +426,245 @@ def create_default_media_categories(sender, instance, created, **kwargs):
             ],
             ignore_conflicts=True,
         )
+
+
+class CatalogCategory(models.Model):
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="catalog_categories")
+    name = models.CharField(max_length=120)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["company", "name"], name="unique_company_catalog_category")]
+
+
+class CatalogItem(models.Model):
+    class Kind(models.TextChoices):
+        PRODUCT = "product", "Produto"
+        SERVICE = "service", "Serviço"
+
+    class PriceMode(models.TextChoices):
+        FIXED = "fixed", "Preço fixo"
+        FROM = "from", "A partir de"
+        QUOTE = "quote", "Sob orçamento"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="catalog_items")
+    category = models.ForeignKey(CatalogCategory, on_delete=models.SET_NULL, null=True, blank=True)
+    name = models.CharField(max_length=200)
+    kind = models.CharField(max_length=12, choices=Kind.choices)
+    description = models.TextField(blank=True, max_length=4000)
+    price_mode = models.CharField(max_length=12, choices=PriceMode.choices, default=PriceMode.QUOTE)
+    sale_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    promotional_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    unit_cost = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    unit = models.CharField(max_length=40, default="unidade")
+    billing_unit = models.CharField(max_length=40, blank=True)
+    sku = models.CharField(max_length=80, blank=True)
+    availability = models.CharField(max_length=160, blank=True)
+    duration_minutes = models.PositiveIntegerField(null=True, blank=True)
+    variants = models.JSONField(default=list, blank=True)
+    internal_notes = models.TextField(blank=True)
+    media_assets = models.ManyToManyField(MediaAsset, blank=True, related_name="catalog_items")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["company", "sku"], condition=~models.Q(sku=""), name="unique_company_catalog_sku")]
+        indexes = [models.Index(fields=["company", "kind", "is_active"])]
+
+
+class PaymentMethod(models.Model):
+    class Kind(models.TextChoices):
+        PIX = "pix", "Pix"
+        CREDIT = "credit", "Cartão de crédito"
+        DEBIT = "debit", "Cartão de débito"
+        BOLETO = "boleto", "Boleto"
+        TRANSFER = "transfer", "Transferência"
+        CASH = "cash", "Dinheiro"
+        OTHER = "other", "Outro"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="payment_methods")
+    name = models.CharField(max_length=100)
+    kind = models.CharField(max_length=12, choices=Kind.choices)
+    condition_label = models.CharField(max_length=100, blank=True)
+    percent_fee = models.DecimalField(max_digits=6, decimal_places=3, null=True, blank=True)
+    fixed_fee = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["company", "name", "condition_label"], name="unique_company_payment_method")]
+
+
+class Sale(models.Model):
+    class Status(models.TextChoices):
+        CONFIRMED = "confirmed", "Confirmada"
+        CANCELLED = "cancelled", "Cancelada"
+
+    class Attribution(models.TextChoices):
+        AI = "ai_assisted", "Assistida pela IA"
+        HUMAN = "human", "Somente humano"
+        EXTERNAL = "external", "Externa"
+        UNKNOWN = "unknown", "Origem não identificada"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="sales")
+    contact = models.ForeignKey(Contact, on_delete=models.PROTECT, related_name="sales")
+    conversation = models.ForeignKey(Conversation, on_delete=models.PROTECT, null=True, blank=True, related_name="sales")
+    order = models.ForeignKey(Order, on_delete=models.PROTECT, null=True, blank=True, related_name="sales")
+    responsible = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="responsible_sales")
+    responsible_name = models.CharField(max_length=160, blank=True)
+    confirmed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="confirmed_sales")
+    sold_at = models.DateTimeField()
+    confirmed_at = models.DateTimeField(auto_now_add=True)
+    subtotal = models.DecimalField(max_digits=14, decimal_places=2)
+    discount_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    total = models.DecimalField(max_digits=14, decimal_places=2)
+    estimated_tax_percent = models.DecimalField(max_digits=6, decimal_places=3, null=True, blank=True)
+    estimated_tax_amount = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    expenses_complete = models.BooleanField(default=False)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.CONFIRMED)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancelled_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="cancelled_sales")
+    cancellation_reason = models.TextField(blank=True)
+    attribution = models.CharField(max_length=16, choices=Attribution.choices, default=Attribution.UNKNOWN)
+    ai_evidence_message = models.ForeignKey(Message, on_delete=models.SET_NULL, null=True, blank=True, related_name="assisted_sales")
+    attribution_version = models.PositiveSmallIntegerField(default=1)
+    attribution_note = models.CharField(max_length=300, blank=True)
+    external_source = models.CharField(max_length=80, blank=True)
+    external_reference = models.CharField(max_length=120, blank=True)
+    idempotency_key = models.CharField(max_length=128)
+    payload_hash = models.CharField(max_length=64)
+    replaces_sale = models.ForeignKey("self", on_delete=models.SET_NULL, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["company", "idempotency_key"], name="unique_company_sale_key"),
+            models.UniqueConstraint(fields=["order"], condition=models.Q(status="confirmed", order__isnull=False), name="unique_active_sale_order"),
+            models.UniqueConstraint(fields=["company", "external_source", "external_reference"], condition=~models.Q(external_reference=""), name="unique_company_sale_external_ref"),
+        ]
+        indexes = [models.Index(fields=["company", "status", "sold_at"]), models.Index(fields=["company", "attribution", "sold_at"])]
+
+
+class SaleLine(models.Model):
+    sale = models.ForeignKey(Sale, on_delete=models.PROTECT, related_name="lines")
+    catalog_item = models.ForeignKey(CatalogItem, on_delete=models.SET_NULL, null=True, blank=True)
+    name = models.CharField(max_length=200)
+    kind = models.CharField(max_length=12, choices=CatalogItem.Kind.choices)
+    category_name = models.CharField(max_length=120, blank=True)
+    quantity = models.DecimalField(max_digits=12, decimal_places=3)
+    unit = models.CharField(max_length=40)
+    unit_price = models.DecimalField(max_digits=12, decimal_places=2)
+    discount_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    line_total = models.DecimalField(max_digits=14, decimal_places=2)
+    unit_cost = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+
+
+class SaleExpense(models.Model):
+    sale = models.ForeignKey(Sale, on_delete=models.PROTECT, related_name="expenses")
+    name = models.CharField(max_length=160)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+
+
+class SalePayment(models.Model):
+    class Kind(models.TextChoices):
+        RECEIPT = "receipt", "Recebimento"
+        REFUND = "refund", "Reembolso"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    sale = models.ForeignKey(Sale, on_delete=models.PROTECT, related_name="payments")
+    kind = models.CharField(max_length=12, choices=Kind.choices)
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    occurred_at = models.DateTimeField()
+    method = models.ForeignKey(PaymentMethod, on_delete=models.SET_NULL, null=True, blank=True)
+    method_name = models.CharField(max_length=100, blank=True)
+    fee_percent = models.DecimalField(max_digits=6, decimal_places=3, null=True, blank=True)
+    fee_fixed = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    fee_amount = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    related_receipt = models.ForeignKey("self", on_delete=models.PROTECT, null=True, blank=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)
+    idempotency_key = models.CharField(max_length=128)
+    payload_hash = models.CharField(max_length=64)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["sale", "idempotency_key"], name="unique_sale_payment_key")]
+        indexes = [models.Index(fields=["sale", "kind", "occurred_at"])]
+
+
+class SaleEvent(models.Model):
+    sale = models.ForeignKey(Sale, on_delete=models.PROTECT, related_name="events")
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)
+    kind = models.CharField(max_length=32)
+    details = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class BillingCustomer(models.Model):
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="billing_customer")
+    asaas_customer_id = models.CharField(max_length=80, blank=True, unique=True, null=True)
+    email_verified_at = models.DateTimeField(null=True, blank=True)
+    full_name = models.CharField(max_length=160)
+    cpf_cnpj = models.CharField(max_length=14)
+    mobile_phone = models.CharField(max_length=16)
+    postal_code = models.CharField(max_length=8)
+    address = models.CharField(max_length=200)
+    address_number = models.CharField(max_length=20)
+    complement = models.CharField(max_length=100, blank=True)
+    province = models.CharField(max_length=100)
+    city_name = models.CharField(max_length=120)
+    state = models.CharField(max_length=2)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
+class BillingCheckout(models.Model):
+    class Kind(models.TextChoices):
+        FIRST_COMPANY = "first_company", "Primeira empresa"
+        EXTRA_COMPANY = "extra_company", "Empresa adicional"
+        EXTRA_NUMBER = "extra_number", "Número adicional"
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Aguardando pagamento"
+        REVIEW = "review", "Conciliação necessária"
+        PAID = "paid", "Pago"
+        CANCELLED = "cancelled", "Cancelado"
+        EXPIRED = "expired", "Expirado"
+        REVOKED = "revoked", "Revogado"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="billing_checkouts")
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="billing_checkouts")
+    kind = models.CharField(max_length=16, choices=Kind.choices)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING)
+    amount = models.DecimalField(max_digits=8, decimal_places=2)
+    request_key = models.CharField(max_length=128, blank=True)
+    request_hash = models.CharField(max_length=64, blank=True)
+    status_token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    asaas_checkout_id = models.CharField(max_length=80, null=True, blank=True, unique=True)
+    asaas_subscription_id = models.CharField(max_length=80, null=True, blank=True, unique=True)
+    last_payment_id = models.CharField(max_length=80, blank=True)
+    last_due_date = models.DateField(null=True, blank=True)
+    overdue_since = models.DateTimeField(null=True, blank=True)
+    checkout_url = models.URLField(max_length=500, blank=True)
+    checkout_started_at = models.DateTimeField(null=True, blank=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["user", "request_key"], condition=~models.Q(request_key=""), name="unique_user_billing_request")]
+        indexes = [models.Index(fields=["company", "kind", "status"])]
+
+
+class BillingEvent(models.Model):
+    event_id = models.CharField(max_length=120, unique=True)
+    event_type = models.CharField(max_length=80)
+    checkout = models.ForeignKey(BillingCheckout, on_delete=models.PROTECT, null=True, blank=True)
+    received_at = models.DateTimeField(auto_now_add=True)

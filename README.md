@@ -11,7 +11,7 @@ Backend Django/DRF multiempresa para atendimento por WhatsApp Cloud API, respost
 - Empresas, associações de usuário, múltiplos números com toggles de IA, contatos, conversas, mensagens, bases, documentos e chunks.
 - Conversas incluem `status`, `lead_stage` e `lead_data` para qualificação futura.
 - Pedidos identificados pela IA ficam pendentes até aprovação ou rejeição humana auditada no painel.
-- O Embedded Signup de coexistência prepara a conexão do WhatsApp Business App com a Cloud API sem migração automática; a ativação depende da aprovação da Meta como Tech Provider.
+- O Embedded Signup V4 oferece conexão normal e coexistência para números elegíveis; os detalhes de configuração, limites e testes estão em [docs/whatsapp-embedded-signup.md](./docs/whatsapp-embedded-signup.md).
 - Cada empresa pode personalizar a persona, o tom e a abordagem da IA em Configurações; as regras de segurança e uso do contexto permanecem fixas no servidor.
 
 O isolamento é aplicado por `company` em todas as entidades, validação de relações, constraints compostas, filtro por associação no Admin e filtro obrigatório na busca vetorial. Superusuários veem tudo; usuários staff veem somente suas empresas.
@@ -19,8 +19,7 @@ O isolamento é aplicado por `company` em todas as entidades, validação de rel
 ## Executar localmente
 
 ```bash
-cp .env.example .env
-# preencha DJANGO_SECRET_KEY; integrações externas podem ficar vazias inicialmente
+# use o .env local ignorado pelo Git e preencha as variáveis necessárias
 docker compose up --build -d
 docker compose exec backend uv run python manage.py createsuperuser
 ```
@@ -31,7 +30,6 @@ Sem executar a aplicação em container (PostgreSQL/Redis ainda necessários):
 
 ```bash
 uv sync
-cp .env.example .env
 uv run python manage.py migrate
 uv run python manage.py runserver 8123
 # em outro terminal
@@ -64,8 +62,8 @@ os logs registram tokens e latência sem atribuir custo.
 
 Não coloque chaves no banco ou Git. Reinicie backend e worker ao alterar variáveis.
 
-Para o Embedded Signup, configure `META_APP_ID`, `META_EMBEDDED_SIGNUP_CONFIG_ID` e
-`WHATSAPP_TOKEN_ENCRYPTION_KEY`. A última deve ser uma chave Fernet estável e secreta;
+Para o Embedded Signup, configure `META_APP_ID`, `META_EMBEDDED_SIGNUP_CONFIG_ID`,
+`WHATSAPP_APP_SECRET` e `WHATSAPP_TOKEN_ENCRYPTION_KEY`. A última deve ser uma chave Fernet estável e secreta;
 se ela for perdida ou trocada, os tokens por número não poderão ser recuperados.
 
 ## Biblioteca de mídias e áudio
@@ -124,3 +122,10 @@ Use **Repository**, branch `main` e o caminho `docker-compose.yml`. Esse arquivo
 Antes do deploy, crie a rede externa `pi_default` no servidor e cadastre no Portainer as variáveis `DB_*` do Neon, `DJANGO_SECRET_KEY`, `DJANGO_ALLOWED_HOSTS` e `CSRF_TRUSTED_ORIGINS`. Para o domínio de produção, use por exemplo `DJANGO_ALLOWED_HOSTS=llm-wpp.gestcloud.com.br` e `CSRF_TRUSTED_ORIGINS=https://llm-wpp.gestcloud.com.br`. Mantenha `DJANGO_DEBUG=false`, `SESSION_COOKIE_SECURE=true` e `CSRF_COOKIE_SECURE=true`. Ative HSTS e redirecionamento HTTPS somente quando todo o tráfego do domínio já estiver protegido pelo proxy. Cadastre também as credenciais Gemini e WhatsApp como variáveis da stack; nunca coloque valores reais no repositório.
 
 O frontend de produção encaminha `/api/` ao backend pela rede Docker, mantendo navegador e API na mesma origem. `FRONTEND_ORIGINS` é necessário apenas quando o navegador chama o backend diretamente a partir de outra origem, como no Vite local; nesse caso, informe a origem exata, incluindo esquema e porta.
+# Cadastro e cobrança Gest Tech
+
+O fluxo de cadastro público cria usuário e empresa pendentes, abre um checkout recorrente de cartão no Asaas e libera acesso somente após o Webhook `CHECKOUT_PAID` autenticado **e confirmação do e-mail**. O primeiro espaço custa R$ 249,90/mês e inclui dois números; empresas adicionais custam R$ 199,90/mês e vagas extras de WhatsApp custam R$ 49,90/mês. Cobranças vencidas têm 7 dias corridos de tolerância.
+
+Configure `ASAAS_API_KEY`, `ASAAS_BASE_URL`, `ASAAS_WEBHOOK_AUTH_TOKEN`, `GESTTECH_PUBLIC_URL`, `GESTTECH_FROM_EMAIL` e as variáveis SMTP (`EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `EMAIL_USE_TLS`) no ambiente do backend, worker e scheduler. O token do Webhook deve ser diferente da API Key. O endpoint é `/api/webhooks/asaas/`. O scheduler Celery executa conciliação diária das assinaturas. O ambiente padrão do Asaas é sandbox; produção exige `ASAAS_ALLOW_PRODUCTION=true` e configuração deliberada da URL de produção.
+
+Veja [especificação](specs/saas-onboarding/spec.md), [plano](specs/saas-onboarding/plan.md) e [prontidão de implantação](specs/saas-onboarding/deployment-readiness.md). Não aplique migrations nem habilite cobrança real sem validar o fluxo completo em sandbox e a revisão de segurança.

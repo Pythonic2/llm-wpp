@@ -4,6 +4,21 @@ Todos os endpoints administrativos estão sob `/api/v1/` e usam autenticação p
 
 O webhook da Meta continua separado em `/api/webhooks/whatsapp/` e não faz parte da API do navegador.
 
+## Cadastro público e assinatura Gest Tech
+
+`POST /api/v1/public/signup/` recebe `email`, `password`, `full_name`, `cpf_cnpj`, `mobile_phone`, `postal_code`, `address`, `address_number`, `complement` opcional, `province`, `city_name`, `state` e `company_name`. Cria conta/empresa pendentes e devolve `status_token`, `status`, `amount` e `checkout_url` do Asaas. Repetir com o mesmo e-mail e senha enquanto a conta estiver pendente retorna a tentativa existente; outra senha recebe erro. O frontend chama `GET /api/v1/public/checkouts/{status_token}/` até confirmação. O redirecionamento do Asaas não ativa acesso. `POST /api/v1/public/verify-email/` confirma um token assinado de 48 horas; `POST /api/v1/public/resend-email/` reenvia o link com resposta genérica. Pagamento e confirmação do e-mail são necessários para ativar a conta.
+
+`POST /api/webhooks/asaas/` exige `asaas-access-token` com token independente da API Key. `CHECKOUT_PAID` autenticado ativa a primeira empresa e a conta. Eventos de pagamento/assinatura e a conciliação diária mantêm o estado de cobrança; após sete dias corridos de vencimento, o acesso ou a vaga adicional é suspensa até confirmação.
+
+| Método e rota | Uso |
+|---|---|
+| `GET /api/v1/billing/profile/status/` | Indica se o usuário já tem cadastro de cobrança. |
+| `POST /api/v1/billing/extra-company/` | Owner compra empresa adicional; recebe `company_name`, opcional `billing_profile` e cabeçalho `Idempotency-Key`. |
+| `GET /api/v1/companies/{company_id}/billing/quota/` | Mostra capacidade e números ativos da empresa. |
+| `POST /api/v1/companies/{company_id}/billing/extra-number/` | Owner compra vaga adicional; recebe `billing_profile` se necessário e `Idempotency-Key`. |
+
+As compras adicionais usam cartão recorrente. Valores são definidos no servidor. O checkout pode entrar em `review` se a resposta do Asaas for ambígua, caso em que a tentativa exige conciliação antes de nova cobrança.
+
 ## Instruções da IA por empresa
 
 `GET /api/v1/companies/{company_id}/` retorna `ai_instructions`. Proprietários e administradores podem atualizar o campo com:
@@ -47,7 +62,8 @@ Membros podem ser listados por qualquer integrante; somente owner/admin (e super
 ## Atendimento e contatos
 
 - `GET|POST /companies/{company_id}/whatsapp-numbers/`; `GET|PATCH|DELETE /companies/{company_id}/whatsapp-numbers/{id}/`.
-- `GET /companies/{company_id}/whatsapp/embedded-signup/config/` retorna a configuração pública do Embedded Signup. `POST /companies/{company_id}/whatsapp/embedded-signup/complete/` troca o código no servidor e aceita exclusivamente a conclusão de coexistência.
+- `GET /companies/{company_id}/whatsapp/embedded-signup/config/` retorna configuração pública V4 e `state` transitório, ligado ao usuário e à empresa por 40 minutos. `POST /companies/{company_id}/whatsapp/embedded-signup/complete/` recebe `code`, `waba_id`, `event`, `state`, opcionalmente `phone_number_id` na coexistência, e `standard_migration_consent: true` no fluxo normal. O backend valida os ativos na Meta, troca o código e retorna o número sem credenciais.
+- `POST /companies/{company_id}/whatsapp-numbers/{id}/disconnect/` desativa a integração local, elimina a credencial e preserva o histórico. Na coexistência, a desconexão da Cloud API no aplicativo WhatsApp Business é uma etapa separada.
 - `GET|POST /companies/{company_id}/contacts/`; o POST recebe `name`, `phone` e o `wa_id` obrigatório. O `wa_id` não pode ser alterado depois da criação.
 - `GET|PATCH|DELETE /companies/{company_id}/contacts/{id}/`.
 - `GET /companies/{company_id}/contacts/{id}/conversations/` lista as conversas do contato.

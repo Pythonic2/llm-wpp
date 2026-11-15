@@ -40,7 +40,7 @@ class CompanySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Company
-        fields = ("id", "name", "slug", "created_at", "role")
+        fields = ("id", "name", "slug", "business_profile", "created_at", "role")
         read_only_fields = fields
 
 
@@ -51,7 +51,20 @@ class CompanyAISettingsSerializer(serializers.ModelSerializer):
             "ai_instructions",
             "hot_lead_notifications_enabled",
             "hot_lead_notification_phone",
+            "business_profile",
+            "estimated_tax_percent",
+            "desired_margin_percent",
         )
+
+    def validate_estimated_tax_percent(self, value):
+        if value is not None and not 0 <= value <= 100:
+            raise serializers.ValidationError("Informe um percentual entre 0 e 100.")
+        return value
+
+    def validate_desired_margin_percent(self, value):
+        if value is not None and not 0 <= value <= 100:
+            raise serializers.ValidationError("Informe um percentual entre 0 e 100.")
+        return value
 
     def validate_ai_instructions(self, value):
         value = value.strip()
@@ -84,7 +97,7 @@ class CompanyAISettingsSerializer(serializers.ModelSerializer):
 
 
 class ContactSerializer(serializers.ModelSerializer):
-    wa_id = serializers.CharField(required=True)
+    wa_id = serializers.CharField(required=False, allow_blank=True, default="")
 
     class Meta:
         model = Contact
@@ -100,11 +113,17 @@ class ContactSerializer(serializers.ModelSerializer):
 
     def validate_wa_id(self, value):
         company = self.context.get("company")
-        if company and Contact.objects.filter(company=company, wa_id=value).exclude(
+        if value and company and Contact.objects.filter(company=company, wa_id=value).exclude(
             pk=getattr(self.instance, "pk", None)
         ).exists():
             raise serializers.ValidationError("Já existe um contato com este WhatsApp ID.")
         return value
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        if self.instance is None and not any(str(attrs.get(name, "")).strip() for name in ("name", "phone", "wa_id")):
+            raise serializers.ValidationError("Informe nome, telefone ou WhatsApp ID.")
+        return attrs
 
 
 class WhatsAppNumberSerializer(serializers.ModelSerializer):
@@ -115,14 +134,34 @@ class WhatsAppNumberSerializer(serializers.ModelSerializer):
             "phone_number_id",
             "display_phone_number",
             "business_account_id",
+            "business_account_name",
             "connection_mode",
+            "connection_state",
             "connected_at",
+            "last_synced_at",
+            "contacts_sync_request_id",
+            "history_sync_request_id",
             "connection_error",
             "ai_enabled",
+            "pause_ai_on_app_echo",
             "is_active",
             "created_at",
         )
-        read_only_fields = ("id", "connection_mode", "connected_at", "connection_error", "created_at")
+        read_only_fields = ("id", "business_account_name", "connection_mode", "connection_state", "connected_at", "last_synced_at", "contacts_sync_request_id", "history_sync_request_id", "connection_error", "created_at")
+
+    def get_fields(self):
+        fields = super().get_fields()
+        if isinstance(self.instance, WhatsAppNumber) and self.instance.connection_mode != "manual":
+            fields["phone_number_id"].read_only = True
+            fields["display_phone_number"].read_only = True
+            fields["business_account_id"].read_only = True
+        return fields
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        if self.instance and self.instance.connection_state == "disconnected" and attrs.get("is_active"):
+            raise serializers.ValidationError("Reconecte o número pela Meta antes de ativá-lo.")
+        return attrs
 
 
 class OrderSerializer(serializers.ModelSerializer):

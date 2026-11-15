@@ -134,7 +134,7 @@ def test_rag_uses_retrieved_context(client_factory, retrieve, settings, tenant_d
     assert "A política permite troca em 7 dias." in prompt
     assert "Atenda como uma confeiteira alegre e objetiva." in prompt
     assert "REGRAS OBRIGATÓRIAS DO SISTEMA" in prompt
-    assert "use exclusivamente o conteúdo" in prompt
+    assert "use exclusivamente <contexto_confiavel> e os dados comerciais de <catalogo_publico>" in prompt
     assert config.max_output_tokens == settings.GEMINI_MAX_OUTPUT_TOKENS
 
 @patch("saas.services.retrieve_context")

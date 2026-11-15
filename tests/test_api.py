@@ -143,7 +143,7 @@ def test_admin_can_enable_hot_lead_notifications(tenant_data):
 
     assert response.status_code == 200
     assert response.data["hot_lead_notifications_enabled"] is True
-    assert response.data["hot_lead_notification_phone"] == "+55 11 99999-0000"
+    assert response.data["hot_lead_notification_phone"] == "5511999990000"
 
 
 def test_agent_cannot_update_company_ai_instructions(tenant_data):

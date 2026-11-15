@@ -33,9 +33,10 @@ def test_webhook_is_idempotent(delay, analyze, client, settings, tenant_data, dj
     analyze.assert_called_once()
 
 
+@patch("saas.webhooks.store_inbound_attachment.delay")
 @patch("saas.webhooks.analyze_conversation.delay")
 @patch("saas.webhooks.answer_inbound_message.delay")
-def test_webhook_queues_audio_without_early_analysis(delay, analyze, client, settings, tenant_data, django_capture_on_commit_callbacks):
+def test_webhook_queues_audio_without_early_analysis(delay, analyze, attachment, client, settings, tenant_data, django_capture_on_commit_callbacks):
     settings.WHATSAPP_APP_SECRET = "secret"
     data = payload()
     item = data["entry"][0]["changes"][0]["value"]["messages"][0]
@@ -52,12 +53,14 @@ def test_webhook_queues_audio_without_early_analysis(delay, analyze, client, set
     assert message.ai_status == Message.AIStatus.QUEUED
     assert message.source_media_id == "meta-audio"
     delay.assert_called_once_with(message.pk)
+    attachment.assert_called_once_with(message.pk)
     analyze.assert_not_called()
 
 
+@patch("saas.webhooks.store_inbound_attachment.delay")
 @patch("saas.webhooks.analyze_conversation.delay")
 @patch("saas.webhooks.answer_inbound_message.delay")
-def test_webhook_queues_received_document_with_caption(delay, analyze, client, settings, tenant_data, django_capture_on_commit_callbacks):
+def test_webhook_queues_received_document_with_caption(delay, analyze, attachment, client, settings, tenant_data, django_capture_on_commit_callbacks):
     settings.WHATSAPP_APP_SECRET = "secret"
     data = payload()
     item = data["entry"][0]["changes"][0]["value"]["messages"][0]
@@ -85,4 +88,5 @@ def test_webhook_queues_received_document_with_caption(delay, analyze, client, s
     assert message.source_media_id == "meta-receipt"
     assert message.text == "Comprovante PIX"
     delay.assert_called_once_with(message.pk)
+    attachment.assert_called_once_with(message.pk)
     analyze.assert_not_called()

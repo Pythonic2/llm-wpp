@@ -1,6 +1,6 @@
 import json
-import uuid
 import logging
+import uuid
 from datetime import timedelta
 from pathlib import Path
 
@@ -49,14 +49,18 @@ from .models import (
     Message,
     Order,
     OrderStatusEvent,
+    EmbeddedSignupAttempt,
     WhatsAppNumber,
+    WhatsAppBusinessAccount,
 )
 from .services import conversation_ai_lock, send_whatsapp_text
 from .tasks import analyze_conversation, process_document, process_media_asset, store_inbound_attachment
 from .meta import (
     MetaConfigurationError, encrypt_access_token, exchange_embedded_signup_code,
-    subscribe_app_to_waba, verify_coexistence_assets,
+    register_cloud_api_number, request_coexistence_sync, subscribe_app_to_waba,
+    verify_embedded_signup_assets,
 )
+from .billing import accessible_companies, assert_number_capacity, company_billing_available
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -81,6 +85,8 @@ def _company_for_request(request, company_id, minimum_role="agent"):
     company = Company.objects.filter(pk=company_id).first()
     if company is None:
         raise NotFound("Empresa não encontrada.")
+    if not company_billing_available(company) and not request.user.is_superuser:
+        raise NotFound("Empresa ainda não disponível.")
     if request.user.is_superuser:
         return company, None
     membership = Membership.objects.filter(company=company, user=request.user).first()
@@ -130,7 +136,7 @@ class LoginView(APIView):
         if user is None or not user.is_active:
             raise ValidationError({"detail": "Usuário ou senha inválidos."})
         login(request, user)
-        memberships = Membership.objects.filter(user=user).select_related("company")
+        memberships = Membership.objects.filter(user=user, company__in=accessible_companies()).select_related("company")
         companies = [
             {**CompanySerializer(membership.company).data, "role": membership.role}
             for membership in memberships
@@ -163,7 +169,7 @@ class MeView(APIView):
     permission_classes = (IsAuthenticated,)
 
     def get(self, request):
-        memberships = Membership.objects.filter(user=request.user).select_related("company")
+        memberships = Membership.objects.filter(user=request.user, company__in=accessible_companies()).select_related("company")
         companies = [
             {**CompanySerializer(item.company).data, "role": item.role}
             for item in memberships
@@ -184,7 +190,7 @@ class CompanyListView(APIView):
             companies = Company.objects.all()
             roles = {str(item.pk): "owner" for item in companies}
         else:
-            memberships = Membership.objects.filter(user=request.user).select_related("company")
+            memberships = Membership.objects.filter(user=request.user, company__in=accessible_companies()).select_related("company")
             companies = [item.company for item in memberships]
             roles = {str(item.company_id): item.role for item in memberships}
         return Response(
@@ -204,6 +210,9 @@ class CompanyDetailView(APIView):
         data["ai_instructions"] = company.ai_instructions
         data["hot_lead_notifications_enabled"] = company.hot_lead_notifications_enabled
         data["hot_lead_notification_phone"] = company.hot_lead_notification_phone
+        if membership is None or membership.role in {Membership.Role.OWNER, Membership.Role.ADMIN}:
+            data["estimated_tax_percent"] = company.estimated_tax_percent
+            data["desired_margin_percent"] = company.desired_margin_percent
         data["role"] = membership.role if membership else "owner"
         data["integrations"] = {
             "whatsapp_configured": bool(settings.WHATSAPP_ACCESS_TOKEN and settings.WHATSAPP_APP_SECRET),
@@ -221,6 +230,8 @@ class CompanyDetailView(APIView):
         data["ai_instructions"] = company.ai_instructions
         data["hot_lead_notifications_enabled"] = company.hot_lead_notifications_enabled
         data["hot_lead_notification_phone"] = company.hot_lead_notification_phone
+        data["estimated_tax_percent"] = company.estimated_tax_percent
+        data["desired_margin_percent"] = company.desired_margin_percent
         return Response(data)
 
 
@@ -420,28 +431,59 @@ class WhatsAppNumberListView(CompanyModelListCreateView):
         page = paginator.paginate_queryset(queryset, request, view=self)
         return paginator.get_paginated_response(self.serializer_class(page, many=True).data)
 
+    def post(self, request, company_id):
+        _company_for_request(request, company_id, "admin")
+        with transaction.atomic():
+            company = Company.objects.select_for_update().get(pk=company_id)
+            if request.data.get("is_active", True):
+                assert_number_capacity(company)
+            return super().post(request, company_id)
+
 
 class WhatsAppNumberDetailView(CompanyModelDetailView):
     model = WhatsAppNumber
     serializer_class = WhatsAppNumberSerializer
     minimum_role = "admin"
 
+    def patch(self, request, company_id, object_id):
+        _company_for_request(request, company_id, "admin")
+        with transaction.atomic():
+            company = Company.objects.select_for_update().get(pk=company_id)
+            number = WhatsAppNumber.objects.select_for_update().filter(company=company, pk=object_id).first()
+            if number and request.data.get("is_active") is True:
+                assert_number_capacity(company, existing_number=number)
+            return super().patch(request, company_id, object_id)
+
+    def delete(self, request, company_id, object_id):
+        _, number = self.get_object(request, company_id, object_id)
+        if number.connection_mode != "manual":
+            raise ValidationError({"detail": "Use Desconectar para preservar o histórico deste número."})
+        return super().delete(request, company_id, object_id)
+
 
 class EmbeddedSignupConfigView(APIView):
     permission_classes = (IsAuthenticated,)
 
     def get(self, request, company_id):
-        _company_for_request(request, company_id, "admin")
+        company, _ = _company_for_request(request, company_id, "admin")
         if not all((settings.META_APP_ID, settings.META_EMBEDDED_SIGNUP_CONFIG_ID,
-                    settings.WHATSAPP_TOKEN_ENCRYPTION_KEY)):
+                    settings.WHATSAPP_TOKEN_ENCRYPTION_KEY, settings.WHATSAPP_APP_SECRET)):
             raise ValidationError({"detail": "Embedded Signup ainda não está configurado no servidor."})
-        return Response({
+        EmbeddedSignupAttempt.objects.filter(expires_at__lt=timezone.now() - timedelta(days=1)).delete()
+        attempt = EmbeddedSignupAttempt.objects.create(
+            company=company, user=request.user, expires_at=timezone.now() + timedelta(minutes=40),
+        )
+        response = Response({
             "app_id": settings.META_APP_ID,
             "config_id": settings.META_EMBEDDED_SIGNUP_CONFIG_ID,
             "api_version": settings.WHATSAPP_API_VERSION,
             "feature_type": "whatsapp_business_app_onboarding",
             "session_info_version": "3",
+            "signup_version": "v4",
+            "state": str(attempt.pk),
         })
+        response["Cache-Control"] = "no-store"
+        return response
 
 
 class EmbeddedSignupCompleteView(APIView):
@@ -452,41 +494,114 @@ class EmbeddedSignupCompleteView(APIView):
         code = str(request.data.get("code", "")).strip()
         waba_id = str(request.data.get("waba_id", "")).strip()
         phone_number_id = str(request.data.get("phone_number_id", "")).strip()
+        existing_hint = WhatsAppNumber.objects.filter(company=company, phone_number_id=phone_number_id).first() if phone_number_id else None
+        assert_number_capacity(company, existing_number=existing_hint)
         event = str(request.data.get("event", "")).strip()
-        if event != "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING":
-            raise ValidationError({
-                "detail": "O fluxo não confirmou a coexistência. O número não foi conectado."
-            })
-        if not code or not waba_id or not phone_number_id:
+        coexistence = event == "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING"
+        if event not in {"FINISH", "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING"}:
+            raise ValidationError({"detail": "A Meta não confirmou a conexão."})
+        if not code or len(code) > 2048 or not waba_id or (not coexistence and not phone_number_id):
             raise ValidationError({"detail": "A Meta não retornou todos os dados da conexão."})
-        if WhatsAppNumber.objects.filter(phone_number_id=phone_number_id).exclude(company=company).exists():
-            raise ValidationError({"detail": "Este número já está associado a outra empresa."})
+        if not coexistence and request.data.get("standard_migration_consent") is not True:
+            raise ValidationError({"detail": "Confirme os riscos da conexão normal antes de continuar."})
+        try:
+            attempt_id = uuid.UUID(str(request.data.get("state", "")))
+        except (ValueError, TypeError):
+            raise ValidationError({"detail": "Sessão de conexão inválida. Inicie novamente."})
+        with transaction.atomic():
+            attempt = EmbeddedSignupAttempt.objects.select_for_update().filter(pk=attempt_id).first()
+            if (attempt is None or attempt.company_id != company.pk or attempt.user_id != request.user.pk
+                    or attempt.consumed_at or attempt.expires_at <= timezone.now()):
+                raise ValidationError({"detail": "Sessão de conexão expirada ou já utilizada. Inicie novamente."})
+            attempt.consumed_at = timezone.now()
+            if not coexistence:
+                attempt.standard_migration_consent_at = attempt.consumed_at
+            attempt.save(update_fields=["consumed_at", "standard_migration_consent_at"])
         try:
             token = exchange_embedded_signup_code(code)
-            phone = verify_coexistence_assets(token, waba_id, phone_number_id)
+            account, phone = verify_embedded_signup_assets(token, waba_id, phone_number_id, coexistence)
+            phone_number_id = str(phone["id"])
+            if WhatsAppBusinessAccount.objects.filter(business_account_id=waba_id).exclude(company=company).exists():
+                raise ValueError("Esta conta WhatsApp já está associada a outra empresa.")
+            if WhatsAppNumber.objects.filter(business_account_id=waba_id).exclude(company=company).exists():
+                raise ValueError("Esta conta WhatsApp já está associada a outra empresa.")
+            if WhatsAppNumber.objects.filter(phone_number_id=phone_number_id).exclude(company=company).exists():
+                raise ValueError("Este número já está associado a outra empresa.")
             encrypted_token = encrypt_access_token(token)
+            if not coexistence:
+                register_cloud_api_number(token, phone_number_id)
             subscribe_app_to_waba(token, waba_id)
         except (MetaConfigurationError, ValueError) as exc:
             raise ValidationError({"detail": str(exc)}) from exc
         except Exception as exc:
-            logger.exception("Falha no Embedded Signup; company_id=%s", company.pk)
+            logger.warning("Falha no Embedded Signup; company_id=%s", company.pk)
             raise ValidationError({
                 "detail": "A Meta não concluiu a conexão. Verifique a elegibilidade e tente novamente."
             }) from exc
-        number, _ = WhatsAppNumber.objects.update_or_create(
-            phone_number_id=phone_number_id,
-            defaults={
-                "company": company,
-                "display_phone_number": str(phone.get("display_phone_number", "")),
-                "business_account_id": waba_id,
-                "access_token_encrypted": encrypted_token,
-                "connection_mode": "coexistence",
-                "connected_at": timezone.now(),
-                "connection_error": "",
-                "is_active": True,
-            },
-        )
+        try:
+            with transaction.atomic():
+                company = Company.objects.select_for_update().get(pk=company.pk)
+                existing_for_capacity = WhatsAppNumber.objects.filter(phone_number_id=phone_number_id, company=company).first()
+                assert_number_capacity(company, existing_number=existing_for_capacity)
+                account_record, _ = WhatsAppBusinessAccount.objects.get_or_create(
+                    business_account_id=waba_id,
+                    defaults={"company": company, "name": str(account.get("name", ""))[:160]},
+                )
+                if account_record.company_id != company.pk:
+                    raise ValidationError({"detail": "Esta conta WhatsApp já está associada a outra empresa."})
+                number = WhatsAppNumber.objects.select_for_update().filter(phone_number_id=phone_number_id).first()
+                if number and number.company_id != company.pk:
+                    raise ValidationError({"detail": "Este número já está associado a outra empresa."})
+                if number is None:
+                    number = WhatsAppNumber(company=company, phone_number_id=phone_number_id)
+                number.display_phone_number = str(phone.get("display_phone_number", ""))
+                number.business_account_id = waba_id
+                number.business_account_name = str(account.get("name", ""))[:160]
+                number.access_token_encrypted = encrypted_token
+                number.connection_mode = "coexistence" if coexistence else "cloud_api"
+                number.connected_at = timezone.now()
+                number.connection_error = ""
+                number.connection_state = "syncing" if coexistence else "connected"
+                number.is_active = True
+                if coexistence:
+                    number.ai_enabled = False
+                number.save()
+        except IntegrityError as exc:
+            raise ValidationError({"detail": "Este número já está em conexão. Tente novamente."}) from exc
+        if coexistence and number.history_sync_requested_at is None:
+            # Ambas as operações são de uso único na Meta. Não repetir automaticamente após resultado ambíguo.
+            number.history_sync_requested_at = timezone.now()
+            number.save(update_fields=["history_sync_requested_at"])
+            try:
+                number.contacts_sync_request_id = request_coexistence_sync(token, phone_number_id, "smb_app_state_sync")
+                number.save(update_fields=["contacts_sync_request_id"])
+                number.history_sync_request_id = request_coexistence_sync(token, phone_number_id, "history")
+                number.save(update_fields=["history_sync_request_id"])
+            except Exception:
+                logger.warning("Sincronização de coexistência não confirmada; number_id=%s", number.pk)
+                number.connection_state = "sync_failed"
+                number.connection_error = "Sincronização não confirmada pela Meta. Solicite suporte antes de tentar novamente."
+                number.save(update_fields=["connection_state", "connection_error"])
         return Response(WhatsAppNumberSerializer(number).data, status=status.HTTP_201_CREATED)
+
+
+class WhatsAppDisconnectView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    def post(self, request, company_id, object_id):
+        company, _ = _company_for_request(request, company_id, "admin")
+        number = WhatsAppNumber.objects.filter(company=company, pk=object_id).first()
+        if number is None:
+            raise NotFound()
+        if number.connection_mode == "manual":
+            raise ValidationError({"detail": "Use o controle de atividade para números manuais."})
+        number.is_active = False
+        number.ai_enabled = False
+        number.access_token_encrypted = ""
+        number.connection_state = "disconnected"
+        number.connection_error = ""
+        number.save(update_fields=["is_active", "ai_enabled", "access_token_encrypted", "connection_state", "connection_error"])
+        return Response(WhatsAppNumberSerializer(number).data)
 
 
 class OrderListView(APIView):
@@ -721,7 +836,8 @@ class ConversationMessagesView(APIView):
                 )
             outgoing.external_id = external_id
             outgoing.status = Message.Status.SENT
-            outgoing.save(update_fields=("external_id", "status"))
+            outgoing.sent_at = timezone.now()
+            outgoing.save(update_fields=("external_id", "status", "sent_at"))
             conversation.last_message_at = outgoing.created_at
             conversation.save(update_fields=("last_message_at",))
             analyze_conversation.delay(conversation.pk)
