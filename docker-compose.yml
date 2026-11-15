@@ -69,7 +69,6 @@ services:
       WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
       META_APP_ID: ${META_APP_ID:-}
       META_EMBEDDED_SIGNUP_CONFIG_ID: ${META_EMBEDDED_SIGNUP_CONFIG_ID:-}
-      WHATSAPP_TOKEN_ENCRYPTION_KEY: ${WHATSAPP_TOKEN_ENCRYPTION_KEY:-}
       WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
       WHATSAPP_API_VERSION: ${WHATSAPP_API_VERSION:-v26.0}
       ASAAS_API_KEY: ${ASAAS_API_KEY:-}
@@ -87,6 +86,12 @@ services:
       - "8123:8123"
     volumes:
       - media_data:/app/media
+      - type: bind
+        source: /home/pi/gesttech-secrets/whatsapp.env
+        target: /app/.env
+        read_only: true
+        bind:
+          create_host_path: false
     depends_on:
       redis:
         condition: service_healthy
@@ -150,7 +155,6 @@ services:
       WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
       META_APP_ID: ${META_APP_ID:-}
       META_EMBEDDED_SIGNUP_CONFIG_ID: ${META_EMBEDDED_SIGNUP_CONFIG_ID:-}
-      WHATSAPP_TOKEN_ENCRYPTION_KEY: ${WHATSAPP_TOKEN_ENCRYPTION_KEY:-}
       WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
       WHATSAPP_API_VERSION: ${WHATSAPP_API_VERSION:-v26.0}
       ASAAS_API_KEY: ${ASAAS_API_KEY:-}
@@ -166,6 +170,13 @@ services:
       EMAIL_USE_TLS: ${EMAIL_USE_TLS:-false}
     networks:
       - pi_default
+    volumes:
+      - type: bind
+        source: /home/pi/gesttech-secrets/whatsapp.env
+        target: /app/.env
+        read_only: true
+        bind:
+          create_host_path: false
   billing-scheduler:
     extends:
       service: worker
