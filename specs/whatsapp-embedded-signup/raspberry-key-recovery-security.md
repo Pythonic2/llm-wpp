@@ -16,4 +16,4 @@
 
 - `docker compose config` confirmou a montagem nos três serviços e ausência da variável vazia.
 - Teste isolado com a imagem atual e UID/GID do app confirmou `load_dotenv=True` e chave Fernet válida, sem rede e sem mostrar o segredo.
-- O backend em produção abriu o token criptografado existente em consulta somente de leitura; worker e agendador carregaram a chave. API e frontend locais responderam HTTP 200. Nenhuma mensagem foi enviada a contato real para teste.
+- O backend em produção abriu o token criptografado existente em consulta somente de leitura e a Meta confirmou acesso ao número sem envio de mensagem; worker e agendador carregaram a chave. API e frontend locais responderam HTTP 200. Nenhuma mensagem foi enviada a contato real para teste.

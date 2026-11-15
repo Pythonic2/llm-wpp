@@ -32,5 +32,5 @@ Restaurar o envio manual e pela IA para números conectados pelo Embedded Signup
 
 - Commit `e9373cf` enviado ao GitHub; o Portainer GitOps recriou backend, worker e agendador com a montagem `/app/.env` somente leitura. A imagem de backend permanece `sha-51c9e4b5111ab03b4c04bcdaeee42a56e87869cc`.
 - O arquivo no host foi criado a partir da chave já presente no `stack.env` privado, sem rotação. Permissões verificadas: `0400`, UID 100 e GID 101. O teste isolado com a imagem atual confirmou leitura via `load_dotenv` e formato Fernet válido.
-- No backend em produção, a consulta somente de leitura abriu o token criptografado existente (`1` número verificado); o token global dos números manuais também está configurado. Worker e agendador carregaram a mesma chave.
+- No backend em produção, a consulta somente de leitura abriu o token criptografado existente (`1` número verificado); a consulta autenticada à Meta confirmou acesso a esse número. O token global dos números manuais também está configurado. Worker e agendador carregaram a mesma chave.
 - Containers `running`, API local `/api/v1/auth/csrf/` e frontend local responderam HTTP 200. Nenhuma mensagem real foi enviada; a entrega ponta a ponta depende de uma próxima mensagem normal do usuário ou de teste com destinatário autorizado.
