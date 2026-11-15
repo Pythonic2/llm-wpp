@@ -1,6 +1,6 @@
 # Deploy no Raspberry — 15/11/2026
 
-Estado: publicado em `https://crm.gestcloud.com.br`, mantendo Asaas sandbox. Cloud Run fora do escopo.
+Estado da migration: `saas.0016` aplicada no Raspberry, mantendo Asaas sandbox. Cloud Run fora do escopo. A versão de equipe descrita abaixo foi publicada inicialmente, mas não é a versão de backend atualmente executada após a sincronização GitOps do Portainer.
 
 ## Versões
 
@@ -14,7 +14,7 @@ Estado: publicado em `https://crm.gestcloud.com.br`, mantendo Asaas sandbox. Clo
 - Antes do deploy: 115 testes Django em PostgreSQL pgvector local descartável; 27 testes frontend, lint e build; `manage.py check`, `makemigrations --check --dry-run` e `git diff --check`.
 - No Raspberry: build ARM64 das duas imagens; `manage.py check` sem problemas; `showmigrations` confirma 0016; backend, worker, agendador, Redis e frontend em execução.
 - Público: `/` e `/team` respondem 200, `/api/v1/auth/csrf/` responde 200. As rotas de equipe e troca de senha respondem 403 sem autenticação, como esperado. Nenhuma conta de funcionário de teste foi criada em produção.
-- Um redeploy do Portainer substituiu inicialmente o backend pela tag antiga; os arquivos privados `stack.env` das stacks 203/205 dentro do Portainer foram alinhados com as tags novas e `pull_policy=never`, e a stack foi reativada. A estabilidade foi observada após a atualização.
+- Um redeploy do Portainer substituiu o backend pela tag antiga. A atualização manual dos arquivos `stack.env` não persistiu na configuração GitOps. Em 15/11/2026, a imagem de backend observada voltou a `sha-51c9e4b5111ab03b4c04bcdaeee42a56e87869cc`; o hotfix de equipe ainda precisa de sincronização persistente das tags. A correção separada da chave WhatsApp foi aplicada via Compose GitOps e está registrada em `specs/whatsapp-embedded-signup/raspberry-key-recovery.md`.
 
 ## Recuperação e pendência
 
