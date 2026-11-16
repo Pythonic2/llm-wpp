@@ -14,9 +14,6 @@ services:
     image: "ghcr.io/pythonic2/llm-wpp:sha-b92a3d5ae9f4a3fdfa39462c331676a040ba720d"
     pull_policy: always
     restart: unless-stopped
-    env_file:
-      - path: /home/pi/gesttech-secrets/asaas.env
-        format: raw
     environment:
       DB_NAME: ${DB_NAME:?Defina DB_NAME no Portainer}
       DB_USER: ${DB_USER:?Defina DB_USER no Portainer}
@@ -102,9 +99,6 @@ services:
     pull_policy: always
     command: .venv/bin/celery -A gesttech worker -l info --concurrency=${CELERY_CONCURRENCY:-2}
     restart: unless-stopped
-    env_file:
-      - path: /home/pi/gesttech-secrets/asaas.env
-        format: raw
     environment:
       DB_NAME: ${DB_NAME:?Defina DB_NAME no Portainer}
       DB_USER: ${DB_USER:?Defina DB_USER no Portainer}
@@ -181,6 +175,12 @@ services:
     command: .venv/bin/celery -A gesttech beat -l info
     volumes:
       - media_data:/app/media
+      - type: bind
+        source: /home/pi/gesttech-secrets/whatsapp.env
+        target: /app/.env
+        read_only: true
+        bind:
+          create_host_path: false
     depends_on:
       redis:
         condition: service_healthy
