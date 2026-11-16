@@ -11,9 +11,12 @@ services:
       - pi_default
 
   backend:
-    image: "ghcr.io/pythonic2/llm-wpp:sha-9572d188f38c6b57243951cbafb744908c49da51"
+    image: "ghcr.io/pythonic2/llm-wpp:sha-b92a3d5ae9f4a3fdfa39462c331676a040ba720d"
     pull_policy: always
     restart: unless-stopped
+    env_file:
+      - path: /home/pi/gesttech-secrets/asaas.env
+        format: raw
     environment:
       DB_NAME: ${DB_NAME:?Defina DB_NAME no Portainer}
       DB_USER: ${DB_USER:?Defina DB_USER no Portainer}
@@ -71,10 +74,6 @@ services:
       META_EMBEDDED_SIGNUP_CONFIG_ID: ${META_EMBEDDED_SIGNUP_CONFIG_ID:-}
       WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
       WHATSAPP_API_VERSION: ${WHATSAPP_API_VERSION:-v26.0}
-      ASAAS_API_KEY: ${ASAAS_API_KEY:-}
-      ASAAS_BASE_URL: ${ASAAS_BASE_URL:-https://api-sandbox.asaas.com/v3}
-      ASAAS_ALLOW_PRODUCTION: ${ASAAS_ALLOW_PRODUCTION:-false}
-      ASAAS_WEBHOOK_AUTH_TOKEN: ${ASAAS_WEBHOOK_AUTH_TOKEN:-}
       GESTTECH_PUBLIC_URL: ${GESTTECH_PUBLIC_URL:-}
       GESTTECH_FROM_EMAIL: ${GESTTECH_FROM_EMAIL:-}
       EMAIL_HOST: ${EMAIL_HOST:-localhost}
@@ -99,10 +98,13 @@ services:
       - pi_default
 
   worker:
-    image: "ghcr.io/pythonic2/llm-wpp:sha-9572d188f38c6b57243951cbafb744908c49da51"
+    image: "ghcr.io/pythonic2/llm-wpp:sha-b92a3d5ae9f4a3fdfa39462c331676a040ba720d"
     pull_policy: always
     command: .venv/bin/celery -A gesttech worker -l info --concurrency=${CELERY_CONCURRENCY:-2}
     restart: unless-stopped
+    env_file:
+      - path: /home/pi/gesttech-secrets/asaas.env
+        format: raw
     environment:
       DB_NAME: ${DB_NAME:?Defina DB_NAME no Portainer}
       DB_USER: ${DB_USER:?Defina DB_USER no Portainer}
@@ -157,10 +159,6 @@ services:
       META_EMBEDDED_SIGNUP_CONFIG_ID: ${META_EMBEDDED_SIGNUP_CONFIG_ID:-}
       WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
       WHATSAPP_API_VERSION: ${WHATSAPP_API_VERSION:-v26.0}
-      ASAAS_API_KEY: ${ASAAS_API_KEY:-}
-      ASAAS_BASE_URL: ${ASAAS_BASE_URL:-https://api-sandbox.asaas.com/v3}
-      ASAAS_ALLOW_PRODUCTION: ${ASAAS_ALLOW_PRODUCTION:-false}
-      ASAAS_WEBHOOK_AUTH_TOKEN: ${ASAAS_WEBHOOK_AUTH_TOKEN:-}
       GESTTECH_PUBLIC_URL: ${GESTTECH_PUBLIC_URL:-}
       GESTTECH_FROM_EMAIL: ${GESTTECH_FROM_EMAIL:-}
       EMAIL_HOST: ${EMAIL_HOST:-localhost}
