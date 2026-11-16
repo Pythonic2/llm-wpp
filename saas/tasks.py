@@ -2,17 +2,20 @@ import hashlib
 import json
 import logging
 import mimetypes
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from celery import shared_task
 from django.core.files.base import ContentFile
 from django.db import transaction
+from django.db.models import OuterRef, Subquery
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 from redis.exceptions import LockError
 
-from .models import CoexistenceWebhookBatch, Company, Conversation, KnowledgeChunk, KnowledgeDocument, MediaAsset, Message, Order
+from .models import CoexistenceWebhookBatch, Company, Conversation, FollowUpAttempt, KnowledgeChunk, KnowledgeDocument, MediaAsset, Message, Order
 from .coexistence import process_app_history
 from .services import (
     answer_with_rag,
@@ -33,6 +36,115 @@ from .services import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@shared_task
+def scan_warm_follow_ups():
+    """Schedule only recent warm conversations; the worker checks every rule again."""
+    from .follow_up import BUSINESS_TIMEZONE
+
+    now = timezone.now()
+    FollowUpAttempt.objects.filter(
+        status=FollowUpAttempt.Status.SENDING, created_at__lt=now - timedelta(minutes=15),
+    ).update(status=FollowUpAttempt.Status.UNKNOWN, reason="Resultado incerto; verificar conversa antes de tentar novamente.")
+    if not 9 <= now.astimezone(BUSINESS_TIMEZONE).hour < 18:
+        return 0
+    inbound_times = Message.objects.filter(
+        conversation_id=OuterRef("pk"), direction=Message.Direction.INBOUND,
+    ).annotate(event_at=Coalesce("sent_at", "created_at")).order_by("-event_at", "-pk").values("event_at")[:1]
+    candidates = Conversation.objects.filter(
+        company__warm_follow_up_enabled=True,
+        lead_temperature=Conversation.LeadTemperature.WARM,
+        opportunity_status=Conversation.OpportunityStatus.OPEN,
+        ai_paused=False,
+        assigned_to__isnull=True,
+        contact__follow_up_consent_at__isnull=False,
+        contact__follow_up_opted_out_at__isnull=True,
+        whatsapp_number__is_active=True,
+        whatsapp_number__ai_enabled=True,
+    ).exclude(status=Conversation.Status.CLOSED).annotate(
+        last_inbound_at=Subquery(inbound_times),
+    ).filter(
+        last_inbound_at__lte=now - timedelta(hours=20),
+        last_inbound_at__gt=now - timedelta(hours=23),
+    ).order_by("-last_inbound_at")[:200]
+    ids = list(candidates.values_list("pk", flat=True))
+    for conversation_id in ids:
+        send_warm_follow_up.delay(conversation_id)
+    return len(ids)
+
+
+@shared_task
+def send_warm_follow_up(conversation_id):
+    """At most one Meta submission per inbound cycle; ambiguous crashes stay pending."""
+    from .follow_up import DAILY_LIMIT, eligibility, generate_follow_up_text
+
+    company_id = Conversation.objects.filter(pk=conversation_id).values_list("company_id", flat=True).first()
+    if company_id is None:
+        return
+    with transaction.atomic():
+        Company.objects.select_for_update().get(pk=company_id)
+        conversation = Conversation.objects.select_for_update().select_related(
+            "company", "contact", "whatsapp_number"
+        ).get(pk=conversation_id)
+        incoming, reason = eligibility(conversation)
+        if incoming is None:
+            return reason
+        local_zone = ZoneInfo("America/Sao_Paulo")
+        today = timezone.now().astimezone(local_zone).date()
+        today_start = timezone.make_aware(
+            datetime.combine(today, time.min), local_zone,
+        )
+        used = FollowUpAttempt.objects.filter(
+            company_id=company_id, created_at__gte=today_start,
+            status__in=(FollowUpAttempt.Status.SENDING, FollowUpAttempt.Status.SENT),
+        ).count()
+        if used >= DAILY_LIMIT:
+            return "daily_limit"
+        attempt, created = FollowUpAttempt.objects.get_or_create(
+            company_id=company_id, conversation=conversation, trigger_message=incoming,
+        )
+        if not created:
+            return "already_attempted"
+    try:
+        text = generate_follow_up_text(conversation)
+        with transaction.atomic():
+            conversation = Conversation.objects.select_for_update().select_related(
+                "company", "contact", "whatsapp_number"
+            ).get(pk=conversation_id)
+            attempt.refresh_from_db()
+            if attempt.status != FollowUpAttempt.Status.SENDING:
+                return "not_sending"
+            if Message.objects.filter(
+                conversation=conversation, created_at__gt=attempt.created_at,
+            ).exclude(pk=attempt.trigger_message_id).exists():
+                FollowUpAttempt.objects.filter(pk=attempt.pk).update(status=FollowUpAttempt.Status.SKIPPED, reason="conversation_changed")
+                return "conversation_changed"
+            incoming_again, reason = eligibility(conversation, ignore_attempt_id=attempt.pk)
+            if incoming_again is None or incoming_again.pk != attempt.trigger_message_id:
+                FollowUpAttempt.objects.filter(pk=attempt.pk).update(status=FollowUpAttempt.Status.SKIPPED, reason=reason or "new_inbound")
+                return reason or "new_inbound"
+            outgoing = Message.objects.create(
+                company=conversation.company, conversation=conversation,
+                external_id=f"warm-pending:{attempt.pk}", idempotency_key=f"warm:{attempt.pk}",
+                direction=Message.Direction.OUTBOUND, message_type="text", text=text,
+                status=Message.Status.PENDING,
+            )
+            attempt.outbound_message = outgoing
+            attempt.text = text
+            attempt.save(update_fields=("outbound_message", "text"))
+        external_id = send_whatsapp_text(conversation.whatsapp_number, conversation.contact.wa_id, text)
+    except Exception as exc:
+        logger.exception("Falha no follow-up automático; conversation_id=%s", conversation_id)
+        FollowUpAttempt.objects.filter(pk=attempt.pk).update(status=FollowUpAttempt.Status.FAILED, reason=type(exc).__name__[:160])
+        if attempt.outbound_message_id:
+            Message.objects.filter(pk=attempt.outbound_message_id).update(status=Message.Status.FAILED)
+        return "failed"
+    sent_at = timezone.now()
+    Message.objects.filter(pk=outgoing.pk).update(external_id=external_id, status=Message.Status.SENT, sent_at=sent_at)
+    FollowUpAttempt.objects.filter(pk=attempt.pk).update(status=FollowUpAttempt.Status.SENT, external_id=external_id, sent_at=sent_at)
+    Conversation.objects.filter(pk=conversation_id, last_message_at__lt=sent_at).update(last_message_at=sent_at)
+    return "sent"
 
 
 @shared_task(autoretry_for=(Exception,), retry_backoff=True, max_retries=8)

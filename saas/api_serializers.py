@@ -56,6 +56,7 @@ class CompanyAISettingsSerializer(serializers.ModelSerializer):
             "ai_instructions",
             "hot_lead_notifications_enabled",
             "hot_lead_notification_phone",
+            "warm_follow_up_enabled",
             "business_profile",
             "estimated_tax_percent",
             "desired_margin_percent",
@@ -106,8 +107,8 @@ class ContactSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Contact
-        fields = ("id", "name", "phone", "wa_id", "created_at", "updated_at")
-        read_only_fields = ("id", "created_at", "updated_at")
+        fields = ("id", "name", "phone", "wa_id", "follow_up_consent_at", "follow_up_consent_source", "follow_up_opted_out_at", "created_at", "updated_at")
+        read_only_fields = ("id", "follow_up_consent_at", "follow_up_consent_source", "follow_up_opted_out_at", "created_at", "updated_at")
         validators = ()
 
     def get_fields(self):

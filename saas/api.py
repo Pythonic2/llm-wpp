@@ -2,8 +2,9 @@ import json
 import logging
 import uuid
 from io import BytesIO
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
 from django.contrib.auth import authenticate, get_user_model, login, logout
@@ -46,6 +47,7 @@ from .models import (
     Company,
     Contact,
     Conversation,
+    FollowUpAttempt,
     KnowledgeBase,
     KnowledgeDocument,
     MediaAsset,
@@ -218,6 +220,7 @@ class CompanyDetailView(APIView):
         data["ai_instructions"] = company.ai_instructions
         data["hot_lead_notifications_enabled"] = company.hot_lead_notifications_enabled
         data["hot_lead_notification_phone"] = company.hot_lead_notification_phone
+        data["warm_follow_up_enabled"] = company.warm_follow_up_enabled
         if membership is None or membership.role in {Membership.Role.OWNER, Membership.Role.ADMIN}:
             data["estimated_tax_percent"] = company.estimated_tax_percent
             data["desired_margin_percent"] = company.desired_margin_percent
@@ -238,6 +241,7 @@ class CompanyDetailView(APIView):
         data["ai_instructions"] = company.ai_instructions
         data["hot_lead_notifications_enabled"] = company.hot_lead_notifications_enabled
         data["hot_lead_notification_phone"] = company.hot_lead_notification_phone
+        data["warm_follow_up_enabled"] = company.warm_follow_up_enabled
         data["estimated_tax_percent"] = company.estimated_tax_percent
         data["desired_margin_percent"] = company.desired_margin_percent
         return Response(data)
@@ -351,6 +355,12 @@ class DashboardView(APIView):
             lead_temperature__in=(Conversation.LeadTemperature.HOT, Conversation.LeadTemperature.WARM),
             next_follow_up_at__lte=timezone.now(),
         ).exclude(status=Conversation.Status.CLOSED)
+        local_zone = ZoneInfo("America/Sao_Paulo")
+        today = timezone.now().astimezone(local_zone).date()
+        today_start = timezone.make_aware(datetime.combine(today, time.min), local_zone)
+        attempts_today = FollowUpAttempt.objects.filter(company=company, created_at__gte=today_start)
+        sent_today = attempts_today.filter(status=FollowUpAttempt.Status.SENT)
+        recent_attempts = attempts_today.select_related("conversation__contact", "outbound_message").order_by("-created_at", "-pk")[:20]
         return Response(
             {
                 "total_conversations": conversations.count(),
@@ -381,6 +391,25 @@ class DashboardView(APIView):
                     follow_ups.select_related("contact", "assigned_to", "whatsapp_number")
                     .order_by("next_follow_up_at")[:8], many=True
                 ).data,
+                "warm_follow_up_enabled": company.warm_follow_up_enabled,
+                "warm_follow_up_contacts_today": sent_today.values("conversation__contact_id").distinct().count(),
+                "warm_follow_up_delivered_today": sent_today.filter(outbound_message__status__in=(Message.Status.DELIVERED, Message.Status.READ)).count(),
+                "warm_follow_up_replied_today": sent_today.filter(responded_at__isnull=False).count(),
+                "warm_follow_up_optouts_today": sent_today.filter(conversation__contact__follow_up_opted_out_at__gte=today_start).count(),
+                "warm_follow_up_failed_today": attempts_today.filter(status=FollowUpAttempt.Status.FAILED).count()
+                + sent_today.filter(outbound_message__status=Message.Status.FAILED).count(),
+                "warm_follow_up_unknown_today": attempts_today.filter(status=FollowUpAttempt.Status.UNKNOWN).count(),
+                "warm_follow_up_attempts": [
+                    {
+                        "id": item.pk,
+                        "conversation_id": item.conversation_id,
+                        "contact_name": item.conversation.contact.name or item.conversation.contact.phone or "Contato",
+                        "reason": item.reason,
+                        "status": "opted_out" if item.sent_at and item.conversation.contact.follow_up_opted_out_at and item.conversation.contact.follow_up_opted_out_at >= item.sent_at else "replied" if item.responded_at else item.outbound_message.status if item.status == FollowUpAttempt.Status.SENT and item.outbound_message else item.status,
+                        "created_at": item.created_at,
+                    }
+                    for item in recent_attempts
+                ],
                 "recent_conversations": ConversationSerializer(recent, many=True).data,
             }
         )
@@ -720,6 +749,31 @@ class ContactListView(CompanyModelListCreateView):
 class ContactDetailView(CompanyModelDetailView):
     model = Contact
     serializer_class = ContactSerializer
+
+
+class ContactFollowUpConsentView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    def post(self, request, company_id, contact_id):
+        company, _ = _company_for_request(request, company_id, "admin")
+        consent = request.data.get("consent")
+        if not isinstance(consent, bool):
+            raise ValidationError({"consent": "Informe verdadeiro ou falso."})
+        source = str(request.data.get("source") or "").strip()
+        if consent and not 5 <= len(source) <= 160:
+            raise ValidationError({"source": "Descreva onde o cliente autorizou o retorno (5 a 160 caracteres)."})
+        with transaction.atomic():
+            contact = generics.get_object_or_404(Contact.objects.select_for_update(), company=company, pk=contact_id)
+            if consent:
+                contact.follow_up_consent_at = timezone.now()
+                contact.follow_up_consent_source = source
+                contact.follow_up_opted_out_at = None
+            else:
+                contact.follow_up_consent_at = None
+                contact.follow_up_consent_source = ""
+                contact.follow_up_opted_out_at = timezone.now()
+            contact.save(update_fields=("follow_up_consent_at", "follow_up_consent_source", "follow_up_opted_out_at", "updated_at"))
+        return Response(ContactSerializer(contact).data)
 
 
 class ContactConversationsView(APIView):

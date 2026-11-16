@@ -162,6 +162,10 @@ EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
 EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS")
 REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"] = {"public_signup": "5/hour", "billing_purchase": "10/hour", "team_invite": "30/hour", "team_invite_accept": "30/hour", "team_staff_create": "20/hour", "login": "30/hour"}
 CELERY_BEAT_SCHEDULE = {
+    "scan-warm-follow-ups": {
+        "task": "saas.tasks.scan_warm_follow_ups",
+        "schedule": 10 * 60,
+    },
     "reconcile-asaas-billing-daily": {
         "task": "saas.tasks.reconcile_asaas_billing",
         "schedule": 24 * 60 * 60,

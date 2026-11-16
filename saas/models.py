@@ -34,6 +34,7 @@ class Company(models.Model):
     desired_margin_percent = models.DecimalField(max_digits=6, decimal_places=3, null=True, blank=True)
     ai_instructions = models.TextField(default=DEFAULT_AI_INSTRUCTIONS, max_length=8000)
     hot_lead_notifications_enabled = models.BooleanField(default=False)
+    warm_follow_up_enabled = models.BooleanField(default=False)
     hot_lead_notification_phone = models.CharField(
         max_length=32,
         blank=True,
@@ -117,6 +118,9 @@ class Contact(models.Model):
     name = models.CharField(max_length=160, blank=True)
     phone = models.CharField(max_length=32, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
+    follow_up_consent_at = models.DateTimeField(null=True, blank=True)
+    follow_up_consent_source = models.CharField(max_length=160, blank=True)
+    follow_up_opted_out_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     class Meta:
@@ -286,6 +290,31 @@ class Message(models.Model):
 
     def clean(self):
         if self.conversation_id and self.conversation.company_id != self.company_id: raise ValidationError("Conversa pertence a outra empresa.")
+
+
+class FollowUpAttempt(models.Model):
+    class Status(models.TextChoices):
+        SENDING = "sending", "Enviando"
+        SENT = "sent", "Enviado"
+        FAILED = "failed", "Falhou"
+        SKIPPED = "skipped", "Ignorado"
+        UNKNOWN = "unknown", "Estado incerto"
+
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="follow_up_attempts")
+    conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name="follow_up_attempts")
+    trigger_message = models.ForeignKey(Message, on_delete=models.CASCADE, related_name="triggered_follow_ups")
+    outbound_message = models.OneToOneField(Message, null=True, blank=True, on_delete=models.SET_NULL)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.SENDING)
+    text = models.TextField(blank=True)
+    reason = models.CharField(max_length=160, blank=True)
+    external_id = models.CharField(max_length=128, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    responded_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=("conversation", "trigger_message"), name="unique_warm_follow_up_cycle")]
+        indexes = [models.Index(fields=("company", "created_at"), name="followup_company_created_idx")]
 
 
 def knowledge_upload_path(instance, filename):

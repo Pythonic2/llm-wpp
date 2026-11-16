@@ -9,8 +9,9 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 from .coexistence import process_account_update, process_app_contacts, process_app_echoes
+from .follow_up import is_opt_out_message
 from .message_time import whatsapp_timestamp
-from .models import CoexistenceWebhookBatch, Contact, Conversation, Message, WhatsAppNumber
+from .models import CoexistenceWebhookBatch, Contact, Conversation, FollowUpAttempt, Message, WhatsAppNumber
 from .tasks import analyze_conversation, answer_inbound_message, process_coexistence_history, store_inbound_attachment
 
 
@@ -93,12 +94,27 @@ def whatsapp_webhook(request):
                     conversation, _ = Conversation.objects.get_or_create(company=number.company, whatsapp_number=number, contact=contact)
                     message_type = item.get("type", "unknown")
                     ai_eligible = not str(wa_id).startswith("bsuid:")
-                    ai_status = Message.AIStatus.QUEUED if ai_eligible and message_type in {"text", "audio", "image", "document"} else Message.AIStatus.SKIPPED
                     media_payload = item.get(message_type, {}) if message_type in {"audio", "image", "document", "video"} else {}
                     text = item.get("text", {}).get("body", "") or media_payload.get("caption", "")
+                    opted_out = message_type == "text" and is_opt_out_message(text)
+                    if opted_out:
+                        contact.follow_up_consent_at = None
+                        contact.follow_up_consent_source = ""
+                        contact.follow_up_opted_out_at = timezone.now()
+                        contact.save(update_fields=("follow_up_consent_at", "follow_up_consent_source", "follow_up_opted_out_at", "updated_at"))
+                        ai_eligible = False
+                    ai_status = Message.AIStatus.QUEUED if ai_eligible and message_type in {"text", "audio", "image", "document"} else Message.AIStatus.SKIPPED
                     message_time = whatsapp_timestamp(item.get("timestamp")) or timezone.now()
                     message, created = Message.objects.get_or_create(external_id=external_id, defaults={"company": number.company, "conversation": conversation, "direction": Message.Direction.INBOUND, "message_type": message_type, "text": text, "source_media_id": media_payload.get("id", ""), "raw_payload": item, "ai_status": ai_status, "sent_at": message_time})
                     if created:
+                        if not opted_out:
+                            recent_follow_up = FollowUpAttempt.objects.filter(
+                                company=number.company, conversation=conversation,
+                                status=FollowUpAttempt.Status.SENT,
+                                sent_at__lte=message_time, responded_at__isnull=True,
+                            ).order_by("-sent_at").first()
+                            if recent_follow_up:
+                                FollowUpAttempt.objects.filter(pk=recent_follow_up.pk).update(responded_at=message_time)
                         fields = []
                         if conversation.last_message_at is None or message_time > conversation.last_message_at:
                             conversation.last_message_at = message_time

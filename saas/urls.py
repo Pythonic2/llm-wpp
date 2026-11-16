@@ -4,6 +4,7 @@ from .api import (
     CompanyListView,
     ContactConversationsView,
     ContactDetailView,
+    ContactFollowUpConsentView,
     ContactListView,
     ConversationActionView,
     ConversationDetailView,
@@ -126,6 +127,11 @@ urlpatterns = [
         "v1/companies/<uuid:company_id>/contacts/<int:object_id>/",
         ContactDetailView.as_view(),
         name="api-contact",
+    ),
+    path(
+        "v1/companies/<uuid:company_id>/contacts/<int:contact_id>/follow-up-consent/",
+        ContactFollowUpConsentView.as_view(),
+        name="api-contact-follow-up-consent",
     ),
     path(
         "v1/companies/<uuid:company_id>/contacts/<int:contact_id>/conversations/",
