@@ -68,7 +68,7 @@ def process_coexistence_history(batch_id):
 @shared_task(autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
 def store_inbound_attachment(message_id):
     message = Message.objects.get(pk=message_id)
-    if message.attachment or not message.source_media_id or message.message_type not in {"image", "document", "audio"}:
+    if message.attachment or not message.source_media_id or message.message_type not in {"document", "audio"}:
         return
     if message.attachment_error == "processing":
         return

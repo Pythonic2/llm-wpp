@@ -9,6 +9,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 from .coexistence import process_account_update, process_app_contacts, process_app_echoes
+from .message_time import whatsapp_timestamp
 from .models import CoexistenceWebhookBatch, Contact, Conversation, Message, WhatsAppNumber
 from .tasks import analyze_conversation, answer_inbound_message, process_coexistence_history, store_inbound_attachment
 
@@ -93,19 +94,23 @@ def whatsapp_webhook(request):
                     message_type = item.get("type", "unknown")
                     ai_eligible = not str(wa_id).startswith("bsuid:")
                     ai_status = Message.AIStatus.QUEUED if ai_eligible and message_type in {"text", "audio", "image", "document"} else Message.AIStatus.SKIPPED
-                    media_payload = item.get(message_type, {}) if message_type in {"audio", "image", "document"} else {}
+                    media_payload = item.get(message_type, {}) if message_type in {"audio", "image", "document", "video"} else {}
                     text = item.get("text", {}).get("body", "") or media_payload.get("caption", "")
-                    message, created = Message.objects.get_or_create(external_id=external_id, defaults={"company": number.company, "conversation": conversation, "direction": Message.Direction.INBOUND, "message_type": message_type, "text": text, "source_media_id": media_payload.get("id", ""), "raw_payload": item, "ai_status": ai_status})
+                    message_time = whatsapp_timestamp(item.get("timestamp")) or timezone.now()
+                    message, created = Message.objects.get_or_create(external_id=external_id, defaults={"company": number.company, "conversation": conversation, "direction": Message.Direction.INBOUND, "message_type": message_type, "text": text, "source_media_id": media_payload.get("id", ""), "raw_payload": item, "ai_status": ai_status, "sent_at": message_time})
                     if created:
-                        conversation.last_message_at = timezone.now()
-                        fields = ["last_message_at"]
+                        fields = []
+                        if conversation.last_message_at is None or message_time > conversation.last_message_at:
+                            conversation.last_message_at = message_time
+                            fields.append("last_message_at")
                         if ai_eligible and conversation.first_eligible_inbound_at is None:
-                            conversation.first_eligible_inbound_at = conversation.last_message_at
+                            conversation.first_eligible_inbound_at = message_time
                             fields.append("first_eligible_inbound_at")
-                        conversation.save(update_fields=fields)
+                        if fields:
+                            conversation.save(update_fields=fields)
                         if ai_eligible:
                             transaction.on_commit(lambda pk=message.pk: answer_inbound_message.delay(pk))
-                        if message_type in {"image", "document", "audio"}:
+                        if message_type in {"document", "audio"}:
                             transaction.on_commit(lambda pk=message.pk: store_inbound_attachment.delay(pk))
                         if ai_eligible and message_type == "text":
                             transaction.on_commit(lambda pk=conversation.pk: analyze_conversation.delay(pk))

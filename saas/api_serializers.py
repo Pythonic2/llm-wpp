@@ -233,7 +233,7 @@ class MessageSerializer(serializers.ModelSerializer):
     attachment_url = serializers.SerializerMethodField()
 
     def get_attachment_url(self, obj):
-        if not obj.attachment:
+        if not obj.attachment and not (obj.source_media_id and obj.message_type in {"image", "video"}):
             return ""
         return (
             f"/api/v1/companies/{obj.company_id}/conversations/{obj.conversation_id}/"
@@ -260,6 +260,7 @@ class MessageSerializer(serializers.ModelSerializer):
             "ai_status",
             "response_to",
             "created_at",
+            "sent_at",
         )
         read_only_fields = fields
 

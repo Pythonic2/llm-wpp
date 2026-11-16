@@ -192,11 +192,17 @@ def _download_whatsapp_media(media_id, max_bytes, number=None):
         for domain in ("facebook.com", "fbcdn.net", "fbsbx.com")
     ):
         raise ValueError("URL de mídia inválida retornada pela Meta.")
-    response = httpx.get(url, headers=headers, timeout=30, follow_redirects=False)
-    response.raise_for_status()
-    if len(response.content) > max_bytes:
-        raise ValueError("Arquivo maior que o limite permitido.")
-    return response.content, str(payload.get("mime_type") or response.headers.get("content-type", ""))
+    chunks = []
+    total = 0
+    with httpx.stream("GET", url, headers=headers, timeout=30, follow_redirects=False) as response:
+        response.raise_for_status()
+        mime_type = str(payload.get("mime_type") or response.headers.get("content-type", ""))
+        for chunk in response.iter_bytes():
+            total += len(chunk)
+            if total > max_bytes:
+                raise ValueError("Arquivo maior que o limite permitido.")
+            chunks.append(chunk)
+    return b"".join(chunks), mime_type
 
 
 def download_whatsapp_audio(media_id, number=None):

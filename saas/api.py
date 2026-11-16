@@ -1,15 +1,18 @@
 import json
 import logging
 import uuid
+from io import BytesIO
 from datetime import timedelta
 from pathlib import Path
 
+import httpx
 from django.contrib.auth import authenticate, get_user_model, login, logout
 from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import validate_email
 from django.db import IntegrityError, connection, transaction
 from django.db.models import Q
+from django.db.models.functions import Coalesce
 from django.http import FileResponse
 from django.utils import timezone
 from django.utils.decorators import method_decorator
@@ -55,7 +58,7 @@ from .models import (
     WhatsAppNumber,
     WhatsAppBusinessAccount,
 )
-from .services import conversation_ai_lock, send_whatsapp_text
+from .services import conversation_ai_lock, download_whatsapp_attachment, send_whatsapp_text
 from .tasks import analyze_conversation, process_document, process_media_asset, store_inbound_attachment
 from .meta import (
     MetaConfigurationError, encrypt_access_token, exchange_embedded_signup_code,
@@ -777,15 +780,15 @@ class ConversationMessagesView(APIView):
 
     def get(self, request, company_id, conversation_id):
         conversation = self.get_conversation(request, company_id, conversation_id)
-        queryset = Message.objects.filter(company=conversation.company, conversation=conversation).order_by(
-            "created_at", "pk"
-        )
+        queryset = Message.objects.filter(company=conversation.company, conversation=conversation).annotate(
+            display_time=Coalesce("sent_at", "created_at")
+        ).order_by("display_time", "pk")
         paginator = ConversationMessagePagination()
         page = paginator.paginate_queryset(queryset, request, view=self)
         for message in page:
             if (
                 message.source_media_id
-                and message.message_type in {"image", "document", "audio"}
+                and message.message_type in {"document", "audio"}
                 and not message.attachment
                 and not message.attachment_error
             ):
@@ -893,14 +896,26 @@ class MessageAttachmentDownloadView(APIView):
             company=company,
             conversation_id=conversation_id,
         )
-        if not message.attachment:
-            raise NotFound("O anexo ainda não está disponível.")
-        return FileResponse(
-            message.attachment.open("rb"),
-            as_attachment=True,
-            filename=message.attachment_name or "anexo",
-            content_type=message.attachment_mime_type or "application/octet-stream",
-        )
+        if message.attachment:
+            return FileResponse(
+                message.attachment.open("rb"),
+                as_attachment=True,
+                filename=message.attachment_name or "anexo",
+                content_type=message.attachment_mime_type or "application/octet-stream",
+            )
+        if message.message_type in {"image", "video"} and message.source_media_id:
+            try:
+                content, mime_type = download_whatsapp_attachment(
+                    message.source_media_id, message.conversation.whatsapp_number,
+                )
+            except (httpx.HTTPError, ValueError) as exc:
+                raise NotFound("A mídia não está disponível para download na Meta.") from exc
+            payload = message.raw_payload.get(message.message_type, {})
+            filename = Path(str(payload.get("filename") or "")).name if isinstance(payload, dict) else ""
+            filename = filename or f"{'foto' if message.message_type == 'image' else 'video'}-{message.pk}.{'jpg' if message.message_type == 'image' else 'mp4'}"
+            safe_type = mime_type if mime_type.startswith(("image/", "video/")) else "application/octet-stream"
+            return FileResponse(BytesIO(content), as_attachment=True, filename=filename, content_type=safe_type)
+        raise NotFound("O anexo ainda não está disponível.")
 
 
 class FollowUpListView(APIView):

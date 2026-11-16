@@ -1,8 +1,7 @@
-from datetime import datetime, timezone as dt_timezone
-
 from django.db import transaction
 from django.utils import timezone
 
+from .message_time import whatsapp_timestamp
 from .models import Contact, Conversation, Message, WhatsAppNumber
 
 
@@ -21,10 +20,7 @@ def _contact(number, phone="", user_id="", name=""):
 
 
 def _timestamp(value):
-    try:
-        return datetime.fromtimestamp(int(value), tz=dt_timezone.utc)
-    except (TypeError, ValueError, OverflowError):
-        return timezone.now()
+    return whatsapp_timestamp(value) or timezone.now()
 
 
 def process_app_echoes(number, value):
@@ -49,15 +45,18 @@ def process_app_echoes(number, value):
             message_type = str(item.get("type") or "unknown")[:32]
             content = item.get(message_type, {})
             text = content.get("body", "") or content.get("caption", "") if isinstance(content, dict) else ""
+            media_id = str(content.get("id") or "")[:128] if isinstance(content, dict) and message_type in {"image", "video"} else ""
+            message_time = _timestamp(item.get("timestamp"))
             message, created = Message.objects.get_or_create(
                 external_id=external_id,
                 defaults={"company": number.company, "conversation": conversation,
                           "direction": Message.Direction.OUTBOUND, "message_type": message_type,
                           "text": text, "status": Message.Status.SENT,
-                          "raw_payload": item, "ai_status": Message.AIStatus.NOT_APPLICABLE},
+                          "raw_payload": item, "source_media_id": media_id,
+                          "ai_status": Message.AIStatus.NOT_APPLICABLE,
+                          "sent_at": message_time},
             )
             if created:
-                message_time = _timestamp(item.get("timestamp"))
                 if conversation.last_message_at is None or message_time > conversation.last_message_at:
                     conversation.last_message_at = message_time
                 if number.pause_ai_on_app_echo:
@@ -119,17 +118,20 @@ def process_app_history(number, value):
                 message_type = str(item.get("type") or "unknown")[:32]
                 content = item.get(message_type, {})
                 text = content.get("body", "") or content.get("caption", "") if isinstance(content, dict) else ""
+                media_id = str(content.get("id") or "")[:128] if isinstance(content, dict) and message_type in {"image", "video"} else ""
                 outbound = str(item.get("from") or "") == business_phone or bool(item.get("to"))
+                message_time = _timestamp(item.get("timestamp"))
                 _, created = Message.objects.get_or_create(
                     external_id=external_id,
                     defaults={"company": number.company, "conversation": conversation,
                               "direction": Message.Direction.OUTBOUND if outbound else Message.Direction.INBOUND,
                               "message_type": message_type, "text": text,
                               "status": Message.Status.SENT if outbound else Message.Status.RECEIVED,
-                              "raw_payload": item, "ai_status": Message.AIStatus.SKIPPED},
+                              "raw_payload": item, "source_media_id": media_id,
+                              "ai_status": Message.AIStatus.SKIPPED,
+                              "sent_at": message_time},
                 )
                 if created:
-                    message_time = _timestamp(item.get("timestamp"))
                     if conversation.last_message_at is None or message_time > conversation.last_message_at:
                         conversation.last_message_at = message_time
                         conversation.save(update_fields=["last_message_at"])
