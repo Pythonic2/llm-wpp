@@ -11,7 +11,7 @@ services:
       - pi_default
 
   backend:
-    image: "ghcr.io/pythonic2/llm-wpp:sha-a9e8edaa774ff63139771615b0cfd926b511c1e8"
+    image: "ghcr.io/pythonic2/llm-wpp:sha-9b222917b5d5a0df6b3ed77aaf961c4f614ef287"
     pull_policy: always
     restart: unless-stopped
     environment:
@@ -95,7 +95,7 @@ services:
       - pi_default
 
   worker:
-    image: "ghcr.io/pythonic2/llm-wpp:sha-a9e8edaa774ff63139771615b0cfd926b511c1e8"
+    image: "ghcr.io/pythonic2/llm-wpp:sha-9b222917b5d5a0df6b3ed77aaf961c4f614ef287"
     pull_policy: always
     command: .venv/bin/celery -A gesttech worker -l info --concurrency=${CELERY_CONCURRENCY:-2}
     restart: unless-stopped
