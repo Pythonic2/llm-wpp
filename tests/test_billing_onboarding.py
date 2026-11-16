@@ -11,7 +11,7 @@ from django.core import signing
 from django.urls import reverse
 from django.utils import timezone
 
-from saas.billing import number_billing_available, reconcile_checkout
+from saas.billing import AsaasClient, BillingProviderError, number_billing_available, reconcile_checkout
 from saas.billing_email import SALT, send_verification_email
 from saas.services import send_whatsapp_text
 
@@ -91,6 +91,51 @@ def webhook(client, payload, token="webhook-test-token-with-more-than-32-charact
     return post_json(client, reverse("asaas-webhook"), payload, HTTP_ASAAS_ACCESS_TOKEN=token)
 
 
+def test_asaas_rejects_mismatched_key_and_api_environment(settings):
+    settings.ASAAS_ALLOW_PRODUCTION = True
+    settings.ASAAS_API_KEY = "$aact_prod_test-only"
+    settings.ASAAS_BASE_URL = "https://api-sandbox.asaas.com/v3"
+    with pytest.raises(BillingProviderError):
+        AsaasClient()
+    settings.ASAAS_API_KEY = "$aact_hmlg_test-only"
+    settings.ASAAS_BASE_URL = "https://api.asaas.com/v3"
+    with pytest.raises(BillingProviderError):
+        AsaasClient()
+
+
+@pytest.mark.django_db
+def test_pending_sandbox_signup_restarts_in_production_without_new_company(client, asaas_mock, settings):
+    payload = signup_payload()
+    first = post_json(client, reverse("api-public-signup"), payload)
+    assert first.status_code == 201, first.content
+    old = BillingCheckout.objects.get(pk=first.json()["id"])
+    old.checkout_url = "https://asaas.com/checkoutSession/show?id=" + old.asaas_checkout_id
+    old.save(update_fields=["checkout_url"])
+    status_url = reverse("api-public-checkout-status", args=[old.status_token])
+    assert client.get(status_url).json()["checkout_url"].startswith("https://sandbox.asaas.com/")
+
+    settings.ASAAS_API_KEY = "$aact_prod_test-only"
+    settings.ASAAS_BASE_URL = "https://api.asaas.com/v3"
+    settings.ASAAS_ALLOW_PRODUCTION = True
+    assert client.get(status_url).json()["checkout_url"] == ""
+    second = post_json(client, reverse("api-public-signup"), payload)
+    assert second.status_code == 201, second.content
+    assert second.json()["checkout_url"].startswith("https://asaas.com/checkoutSession/show?id=")
+    new = BillingCheckout.objects.get(pk=second.json()["id"])
+    old.refresh_from_db()
+    assert old.status == BillingCheckout.Status.EXPIRED
+    assert old.company_id == new.company_id
+    assert new.asaas_environment == "production"
+    assert new.user.billing_customer.asaas_environment == "production"
+    assert Company.objects.count() == 1
+    assert len([call for call in asaas_mock if call[:2] == ("POST", "/customers")]) == 2
+    assert webhook(client, paid_event(old, "sandbox-event-after-switch")).status_code == 400
+    assert new.company.billing_status == Company.BillingStatus.PENDING
+    forged = paid_event(new, "missing-checkout-id")
+    forged["checkout"].pop("id")
+    assert webhook(client, forged).status_code == 400
+
+
 def verify_email(client, checkout):
     token = signing.dumps({"user_id": checkout.user_id, "email": checkout.user.email}, salt=SALT)
     assert post_json(client, reverse("api-public-verify-email"), {"token": token}).status_code == 200
@@ -102,7 +147,7 @@ def test_signup_requires_paid_webhook_and_is_idempotent(client, asaas_mock):
     assert result.status_code == 201, result.content
     data = result.json()
     assert data["amount"] == "249.90"
-    assert data["checkout_url"].startswith("https://asaas.com/checkoutSession/show?id=")
+    assert data["checkout_url"].startswith("https://sandbox.asaas.com/checkoutSession/show?id=")
     checkout = BillingCheckout.objects.get(pk=data["id"])
     assert checkout.company.billing_status == Company.BillingStatus.PENDING
     assert not checkout.user.is_active

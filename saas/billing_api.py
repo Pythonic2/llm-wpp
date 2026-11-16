@@ -23,7 +23,8 @@ from rest_framework.views import APIView
 
 from .billing import (
     AsaasClient, BillingProviderError, EXTRA_COMPANY_PRICE, EXTRA_NUMBER_PRICE, FIRST_COMPANY_PRICE,
-    accessible_companies, company_billing_available, number_capacity, process_asaas_event, provision_checkout,
+    accessible_companies, asaas_environment, checkout_link, company_billing_available, number_capacity,
+    process_asaas_event, provision_checkout,
 )
 from .billing_email import confirm_email, queue_verification_email
 from .models import BillingCheckout, BillingCustomer, Company, Membership, WhatsAppNumber
@@ -131,10 +132,12 @@ def _new_company(name):
 
 
 def _response(checkout):
+    link_available = (checkout.status == BillingCheckout.Status.PENDING
+                      and checkout.asaas_environment == asaas_environment())
     return {
         "id": str(checkout.pk), "status_token": str(checkout.status_token),
         "status": checkout.status, "kind": checkout.kind, "amount": str(checkout.amount),
-        "checkout_url": checkout.checkout_url if checkout.status == BillingCheckout.Status.PENDING else "",
+        "checkout_url": checkout_link(checkout) if link_available else "",
     }
 
 
@@ -169,6 +172,7 @@ class PublicSignupView(APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
         email = data["email"]
+        profile_fields = {field: data[field] for field in BillingProfileInput().fields}
         if User.objects.filter(email__iexact=email).exists() or User.objects.filter(username__iexact=email).exists():
             existing_user = User.objects.filter(username__iexact=email, email__iexact=email).first()
             if existing_user and not existing_user.is_active and existing_user.check_password(data["password"]):
@@ -176,10 +180,31 @@ class PublicSignupView(APIView):
                     user=existing_user, kind=BillingCheckout.Kind.FIRST_COMPANY,
                 ).order_by("-created_at").first()
                 if existing_checkout:
+                    if existing_checkout.asaas_environment != asaas_environment():
+                        if BillingCheckout.objects.filter(user=existing_user, status=BillingCheckout.Status.PAID).exists():
+                            raise ValidationError({"detail": "Cadastro anterior possui pagamento. Contate o suporte."})
+                        with transaction.atomic():
+                            previous = BillingCheckout.objects.select_for_update().get(pk=existing_checkout.pk)
+                            current = BillingCheckout.objects.filter(
+                                user=existing_user, kind=BillingCheckout.Kind.FIRST_COMPANY,
+                                asaas_environment=asaas_environment(),
+                            ).order_by("-created_at").first()
+                            if current:
+                                return Response(_response(current), status=status.HTTP_200_OK)
+                            if previous.status in {BillingCheckout.Status.PENDING, BillingCheckout.Status.REVIEW}:
+                                previous.status = BillingCheckout.Status.EXPIRED
+                                previous.save(update_fields=["status", "updated_at"])
+                            _profile_for_user(existing_user, profile_fields)
+                            checkout = BillingCheckout.objects.create(
+                                user=existing_user, company=previous.company,
+                                kind=BillingCheckout.Kind.FIRST_COMPANY,
+                                amount=FIRST_COMPANY_PRICE, asaas_environment=asaas_environment(),
+                            )
+                            queue_verification_email(existing_user.billing_customer.pk)
+                        return _provision_response(checkout)
                     queue_verification_email(existing_user.billing_customer.pk)
                     return Response(_response(existing_checkout), status=status.HTTP_200_OK)
             raise ValidationError({"email": "Este e-mail já está cadastrado. Entre na sua conta ou contate o suporte."})
-        profile_fields = {field: data[field] for field in BillingProfileInput().fields}
         try:
             with transaction.atomic():
                 user = User.objects.create_user(username=email, email=email, password=data["password"], is_active=False)
@@ -187,10 +212,10 @@ class PublicSignupView(APIView):
                 user.save(update_fields=["first_name"])
                 company = _new_company(data["company_name"])
                 Membership.objects.create(user=user, company=company, role=Membership.Role.OWNER)
-                profile = BillingCustomer.objects.create(user=user, **profile_fields)
+                profile = BillingCustomer.objects.create(user=user, asaas_environment=asaas_environment(), **profile_fields)
                 checkout = BillingCheckout.objects.create(
                     user=user, company=company, kind=BillingCheckout.Kind.FIRST_COMPANY,
-                    amount=FIRST_COMPANY_PRICE,
+                    amount=FIRST_COMPANY_PRICE, asaas_environment=asaas_environment(),
                 )
                 queue_verification_email(profile.pk)
         except IntegrityError as exc:
@@ -207,7 +232,8 @@ class PublicCheckoutStatusView(APIView):
             return Response({"detail": "Compra não encontrada."}, status=status.HTTP_404_NOT_FOUND)
         response = Response({
             "status": checkout.status, "kind": checkout.kind, "amount": str(checkout.amount),
-            "checkout_url": checkout.checkout_url if checkout.status == BillingCheckout.Status.PENDING else "",
+            "checkout_url": checkout_link(checkout) if (checkout.status == BillingCheckout.Status.PENDING
+                                                     and checkout.asaas_environment == asaas_environment()) else "",
             "email_verified": bool(checkout.user.billing_customer.email_verified_at),
             "can_login": checkout.kind == BillingCheckout.Kind.FIRST_COMPANY and checkout.status == BillingCheckout.Status.PAID and checkout.user.is_active,
         })
@@ -267,7 +293,7 @@ def _recover_email_review(user, *, kind, request_key, request_hash, billing_emai
     """Retry only when Asaas still has no email, the known definitive validation failure."""
     query = BillingCheckout.objects.select_for_update().filter(
         user=user, kind=kind, status=BillingCheckout.Status.REVIEW,
-        asaas_checkout_id__isnull=True,
+        asaas_checkout_id__isnull=True, asaas_environment=asaas_environment(),
     )
     if company_name is not None:
         query = query.filter(company__name=company_name)
@@ -278,7 +304,7 @@ def _recover_email_review(user, *, kind, request_key, request_hash, billing_emai
         if checkout is None:
             if company_name is not None and BillingCheckout.objects.filter(
                 user=user, kind=kind, status=BillingCheckout.Status.REVIEW,
-                asaas_checkout_id__isnull=True,
+                asaas_checkout_id__isnull=True, asaas_environment=asaas_environment(),
             ).exists():
                 raise ValidationError({"detail": "Há uma compra de empresa em análise. Retome com o mesmo nome ou contate o suporte."})
             return None
@@ -305,10 +331,20 @@ def _recover_email_review(user, *, kind, request_key, request_hash, billing_emai
 def _profile_for_user(user, values):
     profile = BillingCustomer.objects.filter(user=user).first()
     if profile:
+        if profile.asaas_environment != asaas_environment():
+            if not values:
+                raise ValidationError({"billing_profile": "Informe novamente os dados de cobrança para este ambiente Asaas."})
+            if BillingCheckout.objects.filter(user=user, status=BillingCheckout.Status.PAID).exists():
+                raise ValidationError({"detail": "Há uma assinatura em outro ambiente. Contate o suporte."})
+            profile.asaas_customer_id = None
+            profile.asaas_environment = asaas_environment()
+            for field, value in values.items():
+                setattr(profile, field, value)
+            profile.save()
         return profile
     if not values:
         raise ValidationError({"billing_profile": "Informe os dados de cobrança para a primeira compra."})
-    return BillingCustomer.objects.create(user=user, **values)
+    return BillingCustomer.objects.create(user=user, asaas_environment=asaas_environment(), **values)
 
 
 def _request_key(request):
@@ -320,6 +356,8 @@ def _request_key(request):
 
 def _existing_request(user, request_key, request_hash):
     checkout = BillingCheckout.objects.filter(user=user, request_key=request_key).first()
+    if checkout and checkout.asaas_environment != asaas_environment():
+        raise ValidationError({"Idempotency-Key": "Use uma nova chave para este ambiente de pagamento."})
     if checkout and checkout.request_hash != request_hash:
         raise ValidationError({"Idempotency-Key": "Chave já usada com outros dados."})
     return checkout
@@ -356,6 +394,7 @@ class ExtraCompanyCheckoutView(APIView):
                 checkout = BillingCheckout.objects.create(
                     user=request.user, company=company, kind=BillingCheckout.Kind.EXTRA_COMPANY,
                     amount=EXTRA_COMPANY_PRICE, request_key=request_key, request_hash=request_hash,
+                    asaas_environment=asaas_environment(),
                 )
         except IntegrityError:
             existing = _existing_request(request.user, request_key, request_hash)
@@ -369,7 +408,7 @@ class BillingProfileStatusView(APIView):
     permission_classes = (IsAuthenticated,)
 
     def get(self, request):
-        return Response({"configured": BillingCustomer.objects.filter(user=request.user).exists(), "email_required": not bool(request.user.email)})
+        return Response({"configured": BillingCustomer.objects.filter(user=request.user, asaas_environment=asaas_environment()).exists(), "email_required": not bool(request.user.email)})
 
 
 class ExtraNumberCheckoutView(APIView):
@@ -405,6 +444,7 @@ class ExtraNumberCheckoutView(APIView):
                 checkout = BillingCheckout.objects.create(
                     user=request.user, company=company, kind=BillingCheckout.Kind.EXTRA_NUMBER,
                     amount=EXTRA_NUMBER_PRICE, request_key=request_key, request_hash=request_hash,
+                    asaas_environment=asaas_environment(),
                 )
         except IntegrityError:
             existing = _existing_request(request.user, request_key, request_hash)

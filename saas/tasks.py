@@ -45,8 +45,10 @@ def reconcile_asaas_checkout(checkout_id):
 def reconcile_asaas_billing():
     """Daily safety net for delayed or missed renewal Webhooks."""
     from .models import BillingCheckout
+    from .billing import asaas_environment
     for checkout_id in BillingCheckout.objects.filter(
         status=BillingCheckout.Status.PAID,
+        asaas_environment=asaas_environment(),
     ).values_list("pk", flat=True).iterator(chunk_size=200):
         reconcile_asaas_checkout.delay(str(checkout_id))
 

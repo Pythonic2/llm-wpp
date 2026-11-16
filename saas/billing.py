@@ -24,6 +24,17 @@ class BillingProviderError(Exception):
     pass
 
 
+def asaas_environment():
+    return "production" if settings.ASAAS_BASE_URL.rstrip("/") == "https://api.asaas.com/v3" else "sandbox"
+
+
+def checkout_link(checkout):
+    if not checkout.asaas_checkout_id:
+        return ""
+    host = "https://asaas.com" if checkout.asaas_environment == "production" else "https://sandbox.asaas.com"
+    return f"{host}/checkoutSession/show?id={checkout.asaas_checkout_id}"
+
+
 class AsaasClient:
     def __init__(self):
         self.key = settings.ASAAS_API_KEY
@@ -34,6 +45,10 @@ class AsaasClient:
             raise BillingProviderError("Integração Asaas não configurada.")
         if self.base == "https://api.asaas.com/v3" and not settings.ASAAS_ALLOW_PRODUCTION:
             raise BillingProviderError("Ambiente Asaas de produção não autorizado.")
+        if self.base == "https://api.asaas.com/v3" and not self.key.startswith("$aact_prod_"):
+            raise BillingProviderError("Chave Asaas incompatível com produção.")
+        if self.base == "https://api-sandbox.asaas.com/v3" and self.key.startswith("$aact_prod_"):
+            raise BillingProviderError("Chave Asaas incompatível com sandbox.")
 
     def request(self, method, path, *, json=None, params=None):
         try:
@@ -57,6 +72,8 @@ def ensure_customer(profile):
         profile = BillingCustomer.objects.select_for_update().get(pk=profile.pk)
         if not profile.user.email:
             raise BillingProviderError("Informe um e-mail de cobrança antes de continuar.")
+        if profile.asaas_environment != asaas_environment():
+            raise BillingProviderError("Dados de cobrança pertencem a outro ambiente Asaas.")
         if profile.asaas_customer_id:
             client = AsaasClient()
             customer = client.request("GET", f"/customers/{profile.asaas_customer_id}")
@@ -124,6 +141,9 @@ def provision_checkout(checkout):
     """Fail closed after an ambiguous provider response to prevent duplicate subscriptions."""
     with transaction.atomic():
         checkout = BillingCheckout.objects.select_for_update().get(pk=checkout.pk)
+        client = AsaasClient()
+        if checkout.asaas_environment != asaas_environment():
+            raise BillingProviderError("Compra pertence a outro ambiente Asaas.")
         if checkout.asaas_checkout_id:
             return checkout
         if checkout.checkout_started_at:
@@ -133,7 +153,7 @@ def provision_checkout(checkout):
     try:
         profile = BillingCustomer.objects.get(user=checkout.user)
         customer_id = ensure_customer(profile)
-        result = AsaasClient().request("POST", "/checkouts", json=checkout_payload(checkout, customer_id))
+        result = client.request("POST", "/checkouts", json=checkout_payload(checkout, customer_id))
         checkout_id = result.get("id")
         try:
             uuid.UUID(str(checkout_id))
@@ -143,7 +163,7 @@ def provision_checkout(checkout):
         BillingCheckout.objects.filter(pk=checkout.pk, status=BillingCheckout.Status.PENDING).update(status=BillingCheckout.Status.REVIEW)
         raise
     checkout.asaas_checkout_id = str(checkout_id)
-    checkout.checkout_url = f"https://asaas.com/checkoutSession/show?id={checkout_id}"
+    checkout.checkout_url = checkout_link(checkout)
     checkout.save(update_fields=["asaas_checkout_id", "checkout_url", "updated_at"])
     return checkout
 
@@ -153,6 +173,7 @@ def number_capacity(company):
         return None  # Preserve existing tenants until they opt into self-service billing.
     paid_slots = BillingCheckout.objects.filter(
         company=company, kind=BillingCheckout.Kind.EXTRA_NUMBER, status=BillingCheckout.Status.PAID,
+        asaas_environment=asaas_environment(),
     ).filter(Q(overdue_since__isnull=True) | Q(overdue_since__gte=timezone.now() - PAYMENT_GRACE)).count()
     return 2 + paid_slots
 
@@ -180,6 +201,7 @@ def company_billing_available(company):
         company=company,
         kind__in=[BillingCheckout.Kind.FIRST_COMPANY, BillingCheckout.Kind.EXTRA_COMPANY],
         status=BillingCheckout.Status.PAID,
+        asaas_environment=asaas_environment(),
     ).filter(Q(overdue_since__isnull=True) | Q(overdue_since__gte=timezone.now() - PAYMENT_GRACE)).exists()
 
 
@@ -187,6 +209,7 @@ def accessible_companies():
     entitled_ids = BillingCheckout.objects.filter(
         kind__in=[BillingCheckout.Kind.FIRST_COMPANY, BillingCheckout.Kind.EXTRA_COMPANY],
         status=BillingCheckout.Status.PAID,
+        asaas_environment=asaas_environment(),
     ).filter(Q(overdue_since__isnull=True) | Q(overdue_since__gte=timezone.now() - PAYMENT_GRACE)).values("company_id")
     return Company.objects.filter(Q(billing_status=Company.BillingStatus.LEGACY) | Q(
         billing_status=Company.BillingStatus.ACTIVE, pk__in=entitled_ids,
@@ -209,7 +232,8 @@ def assert_number_capacity(company, *, existing_number=None):
 def reconcile_checkout(checkout_id):
     """One-off provider reconciliation for checkout-to-subscription and renewal state."""
     checkout = BillingCheckout.objects.select_related("user__billing_customer").get(pk=checkout_id)
-    if checkout.status != BillingCheckout.Status.PAID or not checkout.asaas_checkout_id:
+    if (checkout.asaas_environment != asaas_environment()
+            or checkout.status != BillingCheckout.Status.PAID or not checkout.asaas_checkout_id):
         return False
     client = AsaasClient()
     initial = client.request("GET", "/payments", params={"checkoutSession": checkout.asaas_checkout_id, "limit": 100})
@@ -284,6 +308,8 @@ def process_asaas_event(payload):
                 checkout = BillingCheckout.objects.select_for_update().filter(pk=uuid.UUID(reference)).first()
             except ValueError:
                 pass
+        if checkout and checkout.asaas_environment != asaas_environment():
+            raise ValidationError({"detail": "Ambiente Asaas divergente."})
         if checkout and checkout_id and checkout.asaas_checkout_id and checkout_id != checkout.asaas_checkout_id:
             raise ValidationError({"detail": "Identificador de checkout divergente."})
         provider_customer = resource.get("customer") or payment.get("customer") or subscription.get("customer")
@@ -301,6 +327,8 @@ def process_asaas_event(payload):
         if subscription_id and not checkout.asaas_subscription_id:
             checkout.asaas_subscription_id = subscription_id
         if event_type == "CHECKOUT_PAID" and resource.get("status") == "PAID":
+            if not checkout.asaas_checkout_id or checkout_id != checkout.asaas_checkout_id:
+                raise ValidationError({"detail": "Checkout Asaas não confirmado."})
             if checkout.status != BillingCheckout.Status.PAID:
                 checkout.status = BillingCheckout.Status.PAID
                 checkout.paid_at = timezone.now()

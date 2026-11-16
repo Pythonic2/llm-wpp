@@ -615,6 +615,7 @@ class SaleEvent(models.Model):
 class BillingCustomer(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="billing_customer")
     asaas_customer_id = models.CharField(max_length=80, blank=True, unique=True, null=True)
+    asaas_environment = models.CharField(max_length=10, default="sandbox")
     email_verified_at = models.DateTimeField(null=True, blank=True)
     full_name = models.CharField(max_length=160)
     cpf_cnpj = models.CharField(max_length=14)
@@ -650,6 +651,7 @@ class BillingCheckout(models.Model):
     kind = models.CharField(max_length=16, choices=Kind.choices)
     status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING)
     amount = models.DecimalField(max_digits=8, decimal_places=2)
+    asaas_environment = models.CharField(max_length=10, default="sandbox")
     request_key = models.CharField(max_length=128, blank=True)
     request_hash = models.CharField(max_length=64, blank=True)
     status_token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
