@@ -133,6 +133,7 @@ class ContactSerializer(serializers.ModelSerializer):
 
 
 class WhatsAppNumberSerializer(serializers.ModelSerializer):
+    business_unit_id = serializers.UUIDField(read_only=True)
     class Meta:
         model = WhatsAppNumber
         fields = (
@@ -141,6 +142,7 @@ class WhatsAppNumberSerializer(serializers.ModelSerializer):
             "display_phone_number",
             "business_account_id",
             "business_account_name",
+            "business_unit_id",
             "connection_mode",
             "connection_state",
             "connected_at",
@@ -171,6 +173,7 @@ class WhatsAppNumberSerializer(serializers.ModelSerializer):
 
 
 class OrderSerializer(serializers.ModelSerializer):
+    business_unit_id = serializers.UUIDField(read_only=True)
     customer_name = serializers.CharField(source="conversation.contact.name", read_only=True)
     customer_phone = serializers.SerializerMethodField()
     approved_by = UserSerializer(read_only=True)
@@ -178,7 +181,7 @@ class OrderSerializer(serializers.ModelSerializer):
     class Meta:
         model = Order
         fields = (
-            "id", "conversation", "customer_name", "customer_phone", "status", "items",
+            "id", "business_unit_id", "conversation", "customer_name", "customer_phone", "status", "items",
             "total", "requested_for", "notes", "summary", "approved_by", "decided_at",
             "created_at", "updated_at",
         )
@@ -189,6 +192,7 @@ class OrderSerializer(serializers.ModelSerializer):
 
 
 class ConversationSerializer(serializers.ModelSerializer):
+    business_unit_id = serializers.UUIDField(read_only=True)
     contact = ContactSerializer(read_only=True)
     assigned_to = UserSerializer(read_only=True)
     assigned_to_id = serializers.PrimaryKeyRelatedField(
@@ -200,6 +204,7 @@ class ConversationSerializer(serializers.ModelSerializer):
         model = Conversation
         fields = (
             "id",
+            "business_unit_id",
             "contact",
             "whatsapp_number",
             "status",
@@ -267,10 +272,11 @@ class MessageSerializer(serializers.ModelSerializer):
 
 
 class KnowledgeBaseSerializer(serializers.ModelSerializer):
+    business_unit_id = serializers.UUIDField(read_only=True)
     class Meta:
         model = KnowledgeBase
-        fields = ("id", "name", "is_active", "created_at")
-        read_only_fields = ("id", "created_at")
+        fields = ("id", "business_unit_id", "name", "is_active", "created_at")
+        read_only_fields = ("id", "business_unit_id", "created_at")
 
 
 class KnowledgeDocumentSerializer(serializers.ModelSerializer):
@@ -356,6 +362,7 @@ def _sniff_media_mime(upload):
 
 
 class MediaAssetSerializer(serializers.ModelSerializer):
+    business_unit_id = serializers.UUIDField(read_only=True)
     file = serializers.FileField(write_only=True, required=False)
     category_name = serializers.CharField(source="category.name", read_only=True)
     download_url = serializers.SerializerMethodField()
@@ -363,7 +370,7 @@ class MediaAssetSerializer(serializers.ModelSerializer):
     class Meta:
         model = MediaAsset
         fields = (
-            "id", "name", "description", "category", "category_name", "tags", "keywords",
+            "id", "business_unit_id", "name", "description", "category", "category_name", "tags", "keywords",
             "file", "download_url", "file_type", "mime_type", "size", "product_service",
             "search_text", "is_active", "allow_ai_send", "status", "error",
             "meta_media_status", "created_at", "updated_at",

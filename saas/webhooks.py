@@ -91,7 +91,10 @@ def whatsapp_webhook(request):
                 if not external_id or len(str(external_id)) > 128 or not wa_id or len(str(wa_id)) > 64: continue
                 with transaction.atomic():
                     contact, _ = Contact.objects.update_or_create(company=number.company, wa_id=wa_id, defaults={"name": profiles.get(str(wa_id), ""), "phone": item.get("from", "")})
-                    conversation, _ = Conversation.objects.get_or_create(company=number.company, whatsapp_number=number, contact=contact)
+                    conversation, _ = Conversation.objects.get_or_create(
+                        company=number.company, whatsapp_number=number, contact=contact,
+                        defaults={"business_unit_id": number.business_unit_id},
+                    )
                     message_type = item.get("type", "unknown")
                     ai_eligible = not str(wa_id).startswith("bsuid:")
                     media_payload = item.get(message_type, {}) if message_type in {"audio", "image", "document", "video"} else {}

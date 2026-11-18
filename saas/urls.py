@@ -44,7 +44,7 @@ from .staff_api import StaffCreateView, InitialPasswordView
 from .billing_api import (
     PublicSignupView, PublicCheckoutStatusView, ExtraCompanyCheckoutView,
     ExtraNumberCheckoutView, BillingQuotaView, BillingProfileStatusView, asaas_webhook,
-    PublicVerifyEmailView, PublicResendEmailView,
+    PublicVerifyEmailView, PublicResendEmailView, PublicPricesView,
 )
 from .commercial_api import (
     CatalogCategoryListView, CatalogCategoryDetailView, CatalogItemListView,
@@ -52,10 +52,12 @@ from .commercial_api import (
     SaleListView, SaleDetailView, SaleCancelView, SaleAttributionView,
     SalePaymentListView, FinanceDashboardView, SaleReportCSVView,
 )
+from .unit_api import UnitListView, UnitDetailView, NumberUnitView, DocumentShareView
 
 urlpatterns = [
     path("webhooks/asaas/", asaas_webhook, name="asaas-webhook"),
     path("v1/public/signup/", PublicSignupView.as_view(), name="api-public-signup"),
+    path("v1/public/prices/", PublicPricesView.as_view(), name="api-public-prices"),
     path("v1/public/team-invites/accept/", AcceptTeamInviteView.as_view(), name="api-team-invite-accept"),
     path("v1/public/verify-email/", PublicVerifyEmailView.as_view(), name="api-public-verify-email"),
     path("v1/public/resend-email/", PublicResendEmailView.as_view(), name="api-public-resend-email"),
@@ -64,6 +66,10 @@ urlpatterns = [
     path("v1/billing/profile/status/", BillingProfileStatusView.as_view(), name="api-billing-profile-status"),
     path("v1/companies/<uuid:company_id>/billing/extra-number/", ExtraNumberCheckoutView.as_view(), name="api-billing-extra-number"),
     path("v1/companies/<uuid:company_id>/billing/quota/", BillingQuotaView.as_view(), name="api-billing-quota"),
+    path("v1/companies/<uuid:company_id>/units/", UnitListView.as_view(), name="api-units"),
+    path("v1/companies/<uuid:company_id>/units/<uuid:unit_id>/", UnitDetailView.as_view(), name="api-unit"),
+    path("v1/companies/<uuid:company_id>/whatsapp-numbers/<int:number_id>/unit/", NumberUnitView.as_view(), name="api-number-unit"),
+    path("v1/companies/<uuid:company_id>/documents/<int:document_id>/share/", DocumentShareView.as_view(), name="api-document-share"),
     path("v1/companies/<uuid:company_id>/catalog/categories/", CatalogCategoryListView.as_view(), name="api-catalog-categories"),
     path("v1/companies/<uuid:company_id>/catalog/categories/<int:category_id>/", CatalogCategoryDetailView.as_view(), name="api-catalog-category"),
     path("v1/companies/<uuid:company_id>/catalog/items/", CatalogItemListView.as_view(), name="api-catalog-items"),

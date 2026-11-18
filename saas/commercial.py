@@ -14,6 +14,7 @@ from .models import (
     CatalogItem, Contact, Conversation, Membership, Message, Order, PaymentMethod,
     Sale, SaleEvent, SaleExpense, SaleLine, SalePayment,
 )
+from .business_units import default_unit, resolve_unit
 
 
 CENT = Decimal("0.01")
@@ -61,7 +62,7 @@ def _attribution(company, conversation, sold_at):
     return Sale.Attribution.UNKNOWN, None
 
 
-def _sale_lines(company, raw_lines):
+def _sale_lines(company, raw_lines, business_unit):
     if not raw_lines:
         raise ValidationError({"lines": "Adicione pelo menos um produto ou serviço."})
     prepared = []
@@ -70,6 +71,8 @@ def _sale_lines(company, raw_lines):
         item = None
         if raw.get("catalog_item_id"):
             item = _related(CatalogItem, company, raw["catalog_item_id"], "catalog_item_id")
+            if (item.business_unit_id or default_unit(company).pk) != business_unit.pk:
+                raise ValidationError({"catalog_item_id": "Item pertence a outra unidade."})
             if not item.is_active:
                 raise ValidationError({"catalog_item_id": "O item do catálogo está inativo."})
         name = (item.name if item else str(raw.get("name", "")).strip())
@@ -136,6 +139,12 @@ def create_sale(company, actor, data, key, payload_hash):
         conversation = order.conversation
         if conversation.contact_id != contact.pk:
             raise ValidationError({"order_id": "O pedido não pertence ao contato."})
+    if conversation:
+        business_unit = conversation.business_unit or default_unit(company)
+        if data.get("business_unit_id") and str(business_unit.pk) != str(data["business_unit_id"]):
+            raise ValidationError({"business_unit_id": "A unidade deve ser a da conversa."})
+    else:
+        business_unit = resolve_unit(company, data.get("business_unit_id"), require_explicit=True)
     responsible = actor
     if data.get("responsible_id"):
         user_id = data["responsible_id"]
@@ -149,7 +158,7 @@ def create_sale(company, actor, data, key, payload_hash):
     sold_at = data["sold_at"]
     if timezone.is_naive(sold_at) or sold_at > timezone.now() + timedelta(minutes=1):
         raise ValidationError({"sold_at": "Informe data/hora válida, sem data futura."})
-    lines, subtotal = _sale_lines(company, data["lines"])
+    lines, subtotal = _sale_lines(company, data["lines"], business_unit)
     discount = money(data.get("discount_amount", 0), "discount_amount")
     if discount < 0 or discount > subtotal:
         raise ValidationError({"discount_amount": "O desconto deve ficar entre zero e o subtotal."})
@@ -173,7 +182,7 @@ def create_sale(company, actor, data, key, payload_hash):
     try:
         with transaction.atomic():
             sale = Sale.objects.create(
-                company=company, contact=contact, conversation=conversation, order=order,
+                company=company, business_unit=business_unit, contact=contact, conversation=conversation, order=order,
                 responsible=responsible, responsible_name=name, confirmed_by=actor,
                 sold_at=sold_at, subtotal=subtotal, discount_amount=discount, total=total,
                 estimated_tax_percent=tax_percent, estimated_tax_amount=tax_amount,

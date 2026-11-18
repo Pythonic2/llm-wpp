@@ -1,7 +1,9 @@
 import uuid
+from decimal import Decimal
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.core.validators import MinValueValidator
 from django.db import models
 from django.db.models.signals import post_save
 from django.dispatch import receiver
@@ -30,6 +32,9 @@ class Company(models.Model):
     slug = models.SlugField(unique=True)
     business_profile = models.CharField(max_length=16, choices=BusinessProfile.choices, blank=True)
     billing_status = models.CharField(max_length=12, choices=BillingStatus.choices, default=BillingStatus.LEGACY)
+    plan = models.ForeignKey("PlanVersion", null=True, blank=True, on_delete=models.PROTECT, related_name="companies")
+    trial_expires_at = models.DateTimeField(null=True, blank=True, verbose_name="teste até")
+    archived_at = models.DateTimeField(null=True, blank=True, verbose_name="arquivada em")
     estimated_tax_percent = models.DecimalField(max_digits=6, decimal_places=3, null=True, blank=True)
     desired_margin_percent = models.DecimalField(max_digits=6, decimal_places=3, null=True, blank=True)
     ai_instructions = models.TextField(default=DEFAULT_AI_INSTRUCTIONS, max_length=8000)
@@ -44,6 +49,81 @@ class Company(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self): return self.name
+
+
+class PlanVersion(models.Model):
+    code = models.CharField(max_length=32)
+    version = models.PositiveSmallIntegerField()
+    name = models.CharField(max_length=100)
+    included_business_units = models.PositiveSmallIntegerField(default=2)
+    included_whatsapp_numbers = models.PositiveSmallIntegerField(default=2)
+    first_company_monthly_price = models.DecimalField(max_digits=8, decimal_places=2, default=Decimal("249.90"), validators=[MinValueValidator(Decimal("0.01"))])
+    extra_company_monthly_price = models.DecimalField(max_digits=8, decimal_places=2, default=Decimal("199.90"), validators=[MinValueValidator(Decimal("0.01"))])
+    additional_whatsapp_monthly_price = models.DecimalField(max_digits=8, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))])
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=("code", "version"), name="unique_plan_version")]
+
+    def __str__(self): return f"{self.name} v{self.version}"
+
+
+class PlanPriceRevision(models.Model):
+    plan = models.ForeignKey(PlanVersion, on_delete=models.PROTECT, related_name="price_revisions")
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL)
+    reason = models.TextField(max_length=2000)
+    previous_prices = models.JSONField(default=dict)
+    new_prices = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self): return f"Revisão de preços {self.pk} — {self.plan}"
+
+
+class BusinessUnit(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="business_units")
+    name = models.CharField(max_length=160)
+    slug = models.SlugField(max_length=80)
+    trade_name = models.CharField(max_length=160, blank=True)
+    activity_description = models.TextField(max_length=1000, blank=True)
+    is_default = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
+    ai_instructions = models.TextField(blank=True, max_length=8000)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=("company", "slug"), name="unique_company_unit_slug"),
+            models.UniqueConstraint(fields=("company",), condition=models.Q(is_default=True), name="unique_company_default_unit"),
+        ]
+
+    def __str__(self): return f"{self.name} — {self.company}"
+
+
+class BusinessUnitEvent(models.Model):
+    company = models.ForeignKey(Company, on_delete=models.CASCADE)
+    business_unit = models.ForeignKey(BusinessUnit, null=True, on_delete=models.SET_NULL)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL)
+    kind = models.CharField(max_length=40)
+    details = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class BusinessUnitReview(models.Model):
+    class Status(models.TextChoices):
+        OPEN = "open", "Em análise"
+        DISMISSED = "dismissed", "Descartado"
+        CONFIRMED = "confirmed", "Confirmado"
+
+    company = models.ForeignKey(Company, on_delete=models.CASCADE)
+    business_unit = models.ForeignKey(BusinessUnit, null=True, blank=True, on_delete=models.SET_NULL)
+    reason = models.TextField(max_length=2000)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.OPEN)
+    decision_reason = models.TextField(blank=True, max_length=2000)
+    decided_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL)
+    decided_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
 
 
 class Membership(models.Model):
@@ -66,6 +146,7 @@ class StaffPasswordState(models.Model):
 
 class WhatsAppNumber(models.Model):
     company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="whatsapp_numbers")
+    business_unit = models.ForeignKey(BusinessUnit, null=True, blank=True, on_delete=models.PROTECT, related_name="whatsapp_numbers")
     phone_number_id = models.CharField(max_length=64, unique=True, help_text="ID do número na Meta")
     display_phone_number = models.CharField(max_length=32)
     business_account_id = models.CharField(max_length=64, blank=True)
@@ -83,6 +164,10 @@ class WhatsAppNumber(models.Model):
     pause_ai_on_app_echo = models.BooleanField(default=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    def clean(self):
+        if self.business_unit_id and self.business_unit.company_id != self.company_id:
+            raise ValidationError("Unidade pertence a outra empresa.")
 
     def __str__(self): return f"{self.display_phone_number} — {self.company}"
 
@@ -145,6 +230,7 @@ class Conversation(models.Model):
         WON = "won", "Ganha"
         LOST = "lost", "Perdida"
     company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="conversations")
+    business_unit = models.ForeignKey(BusinessUnit, null=True, blank=True, on_delete=models.PROTECT, related_name="conversations")
     whatsapp_number = models.ForeignKey(WhatsAppNumber, on_delete=models.PROTECT, related_name="conversations")
     contact = models.ForeignKey(Contact, on_delete=models.PROTECT, related_name="conversations")
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.OPEN)
@@ -179,6 +265,7 @@ class Conversation(models.Model):
     def clean(self):
         if self.whatsapp_number_id and self.whatsapp_number.company_id != self.company_id: raise ValidationError("Número pertence a outra empresa.")
         if self.contact_id and self.contact.company_id != self.company_id: raise ValidationError("Contato pertence a outra empresa.")
+        if self.business_unit_id and self.business_unit.company_id != self.company_id: raise ValidationError("Unidade pertence a outra empresa.")
 
 
 class Order(models.Model):
@@ -190,6 +277,7 @@ class Order(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="orders")
+    business_unit = models.ForeignKey(BusinessUnit, null=True, blank=True, on_delete=models.PROTECT, related_name="orders")
     conversation = models.ForeignKey(Conversation, on_delete=models.PROTECT, related_name="orders")
     status = models.CharField(max_length=24, choices=Status.choices, default=Status.PENDING)
     items = models.JSONField(default=list, blank=True)
@@ -222,6 +310,8 @@ class Order(models.Model):
     def clean(self):
         if self.conversation_id and self.conversation.company_id != self.company_id:
             raise ValidationError("Conversa pertence a outra empresa.")
+        if self.business_unit_id and self.business_unit.company_id != self.company_id:
+            raise ValidationError("Unidade pertence a outra empresa.")
 
 
 class OrderStatusEvent(models.Model):
@@ -323,11 +413,15 @@ def knowledge_upload_path(instance, filename):
 
 class KnowledgeBase(models.Model):
     company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="knowledge_bases")
+    business_unit = models.ForeignKey(BusinessUnit, null=True, blank=True, on_delete=models.PROTECT, related_name="knowledge_bases")
     name = models.CharField(max_length=120)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     class Meta:
         constraints = [models.UniqueConstraint(fields=["company", "name"], name="unique_company_knowledge_base")]
+    def clean(self):
+        if self.business_unit_id and self.business_unit.company_id != self.company_id:
+            raise ValidationError("Unidade pertence a outra empresa.")
     def __str__(self): return f"{self.name} — {self.company}"
 
 
@@ -348,6 +442,20 @@ class KnowledgeDocument(models.Model):
     def clean(self):
         if self.knowledge_base_id and self.knowledge_base.company_id != self.company_id: raise ValidationError("Base pertence a outra empresa.")
         if self.file and self.file.name.rsplit(".", 1)[-1].lower() not in {"pdf", "txt", "csv"}: raise ValidationError("Use PDF, TXT ou CSV.")
+
+
+class KnowledgeDocumentShare(models.Model):
+    document = models.ForeignKey(KnowledgeDocument, on_delete=models.CASCADE, related_name="unit_shares")
+    business_unit = models.ForeignKey(BusinessUnit, on_delete=models.CASCADE, related_name="shared_documents")
+    granted_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=("document", "business_unit"), name="unique_document_unit_share")]
+
+    def clean(self):
+        if self.document_id and self.business_unit_id and self.document.company_id != self.business_unit.company_id:
+            raise ValidationError("Documento e unidade pertencem a empresas diferentes.")
 
 
 class KnowledgeChunk(models.Model):
@@ -414,6 +522,7 @@ class MediaAsset(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="media_assets")
+    business_unit = models.ForeignKey(BusinessUnit, null=True, blank=True, on_delete=models.PROTECT, related_name="media_assets")
     name = models.CharField(max_length=200)
     description = models.TextField(max_length=4000)
     category = models.ForeignKey(
@@ -443,6 +552,8 @@ class MediaAsset(models.Model):
     def clean(self):
         if self.category_id and self.category.company_id != self.company_id:
             raise ValidationError("Categoria pertence a outra empresa.")
+        if self.business_unit_id and self.business_unit.company_id != self.company_id:
+            raise ValidationError("Unidade pertence a outra empresa.")
 
     def __str__(self):
         return f"{self.name} — {self.company}"
@@ -461,6 +572,27 @@ def create_default_media_categories(sender, instance, created, **kwargs):
             ],
             ignore_conflicts=True,
         )
+
+
+@receiver(post_save, sender=Company)
+def create_default_business_unit(sender, instance, created, **kwargs):
+    if not created:
+        return
+    plan, _ = PlanVersion.objects.get_or_create(
+        code="basic", version=2,
+        defaults={
+            "name": "Básico", "included_business_units": 2,
+            "included_whatsapp_numbers": 2,
+            "additional_whatsapp_monthly_price": Decimal("30.00"),
+        },
+    )
+    if instance.plan_id is None:
+        Company.objects.filter(pk=instance.pk).update(plan=plan)
+        instance.plan = plan
+    BusinessUnit.objects.get_or_create(
+        company=instance, is_default=True,
+        defaults={"name": "Geral", "slug": "geral"},
+    )
 
 
 class CatalogCategory(models.Model):
@@ -485,6 +617,7 @@ class CatalogItem(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="catalog_items")
+    business_unit = models.ForeignKey(BusinessUnit, null=True, blank=True, on_delete=models.PROTECT, related_name="catalog_items")
     category = models.ForeignKey(CatalogCategory, on_delete=models.SET_NULL, null=True, blank=True)
     name = models.CharField(max_length=200)
     kind = models.CharField(max_length=12, choices=Kind.choices)
@@ -508,6 +641,10 @@ class CatalogItem(models.Model):
     class Meta:
         constraints = [models.UniqueConstraint(fields=["company", "sku"], condition=~models.Q(sku=""), name="unique_company_catalog_sku")]
         indexes = [models.Index(fields=["company", "kind", "is_active"])]
+
+    def clean(self):
+        if self.business_unit_id and self.business_unit.company_id != self.company_id:
+            raise ValidationError("Unidade pertence a outra empresa.")
 
 
 class PaymentMethod(models.Model):
@@ -548,6 +685,7 @@ class Sale(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="sales")
+    business_unit = models.ForeignKey(BusinessUnit, null=True, blank=True, on_delete=models.PROTECT, related_name="sales")
     contact = models.ForeignKey(Contact, on_delete=models.PROTECT, related_name="sales")
     conversation = models.ForeignKey(Conversation, on_delete=models.PROTECT, null=True, blank=True, related_name="sales")
     order = models.ForeignKey(Order, on_delete=models.PROTECT, null=True, blank=True, related_name="sales")
@@ -705,3 +843,5 @@ class BillingEvent(models.Model):
     event_type = models.CharField(max_length=80)
     checkout = models.ForeignKey(BillingCheckout, on_delete=models.PROTECT, null=True, blank=True)
     received_at = models.DateTimeField(auto_now_add=True)
+
+

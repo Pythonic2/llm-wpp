@@ -11,12 +11,13 @@ from urllib.parse import urlparse
 import pymupdf
 import httpx
 from django.conf import settings
+from django.db.models import Q
 from google import genai
 from google.genai import types
 from pgvector.django import CosineDistance
 from redis import Redis
 
-from .models import CatalogItem, Company, KnowledgeChunk, WhatsAppNumber
+from .models import CatalogItem, Company, Conversation, KnowledgeChunk, WhatsAppNumber
 from .meta import access_token_for_number
 
 
@@ -75,10 +76,25 @@ def embed_texts(texts, task_type="RETRIEVAL_DOCUMENT"):
     return [item.values for item in response.embeddings]
 
 
-def retrieve_context(company_id, question, knowledge_base_id=None, limit=None):
+def authorized_chunks(company_id, business_unit_id):
+    """The database predicate shared by every RAG retrieval path."""
+    from .models import KnowledgeDocumentShare
+
+    shared_documents = KnowledgeDocumentShare.objects.filter(
+        business_unit_id=business_unit_id, document__company_id=company_id,
+    ).values("document_id")
+    return KnowledgeChunk.objects.filter(company_id=company_id, knowledge_base__is_active=True).filter(
+        Q(knowledge_base__business_unit_id=business_unit_id) | Q(document_id__in=shared_documents)
+    )
+
+
+def retrieve_context(company_id, question, knowledge_base_id=None, limit=None, business_unit_id=None):
+    from .business_units import default_unit
+
+    business_unit_id = business_unit_id or default_unit(Company.objects.get(pk=company_id)).pk
     limit = settings.GEMINI_RAG_TOP_K if limit is None else limit
     vector = embed_texts([question], "RETRIEVAL_QUERY")[0]
-    queryset = KnowledgeChunk.objects.filter(company_id=company_id, knowledge_base__is_active=True)
+    queryset = authorized_chunks(company_id, business_unit_id)
     if knowledge_base_id: queryset = queryset.filter(knowledge_base_id=knowledge_base_id)
     return list(queryset.annotate(distance=CosineDistance("embedding", vector)).order_by("distance")[:limit])
 
@@ -213,18 +229,22 @@ def download_whatsapp_attachment(media_id, number=None):
     return _download_whatsapp_media(media_id, settings.WHATSAPP_ATTACHMENT_MAX_BYTES, number)
 
 
-def search_media(company_id, query, category_id=None, product_service=None, limit=None):
+def authorized_media(company_id, business_unit_id):
     from .models import MediaAsset
-
-    limit = min(limit or settings.MEDIA_SEARCH_TOP_K, 10)
-    vector = embed_texts([query], "RETRIEVAL_QUERY")[0]
-    queryset = MediaAsset.objects.filter(
-        company_id=company_id,
-        is_active=True,
-        allow_ai_send=True,
-        status=MediaAsset.Status.READY,
+    return MediaAsset.objects.filter(
+        company_id=company_id, business_unit_id=business_unit_id,
+        is_active=True, allow_ai_send=True, status=MediaAsset.Status.READY,
         embedding__isnull=False,
     )
+
+
+def search_media(company_id, query, category_id=None, product_service=None, limit=None, business_unit_id=None):
+    from .business_units import default_unit
+
+    business_unit_id = business_unit_id or default_unit(Company.objects.get(pk=company_id)).pk
+    limit = min(limit or settings.MEDIA_SEARCH_TOP_K, 10)
+    vector = embed_texts([query], "RETRIEVAL_QUERY")[0]
+    queryset = authorized_media(company_id, business_unit_id)
     if category_id:
         queryset = queryset.filter(category_id=category_id)
     if product_service:
@@ -232,7 +252,7 @@ def search_media(company_id, query, category_id=None, product_service=None, limi
     return list(queryset.annotate(distance=CosineDistance("embedding", vector)).order_by("distance")[:limit])
 
 
-def select_media_for_question(company_id, question, conversation_context=""):
+def select_media_for_question(company_id, question, conversation_context="", business_unit_id=None):
     selection_query = "\n".join(part for part in (conversation_context, question) if part).strip()
     def normalize(value):
         return unicodedata.normalize(
@@ -247,7 +267,7 @@ def select_media_for_question(company_id, question, conversation_context=""):
     )
     if not explicit_media_pattern.search(normalized_question):
         return None
-    candidates = search_media(company_id, selection_query)
+    candidates = search_media(company_id, selection_query, business_unit_id=business_unit_id)
     if not candidates:
         return None
     candidate_data = [
@@ -434,13 +454,24 @@ def _compact_rag_context(chunks):
 def answer_with_rag(
     company_id, question, conversation_id=None, current_message_id=None, selected_media=None
 ):
-    company = Company.objects.only("ai_instructions").get(pk=company_id)
+    from .business_units import default_unit
+    company = Company.objects.get(pk=company_id)
+    conversation = Conversation.objects.filter(company=company, pk=conversation_id).select_related("business_unit").first() if conversation_id else None
+    if conversation_id and conversation is None:
+        raise ValueError("Conversa não pertence à empresa.")
+    unit = conversation.business_unit if conversation and conversation.business_unit_id else default_unit(company)
+    if unit.company_id != company.pk:
+        raise ValueError("Unidade da conversa não pertence à empresa.")
+    if selected_media is not None and (
+        selected_media.company_id != company.pk or selected_media.business_unit_id != unit.pk
+    ):
+        raise ValueError("Mídia não pertence à unidade da conversa.")
     is_greeting = greeting_response(question) is not None
-    chunks = [] if is_greeting else retrieve_context(company_id, question)
+    chunks = [] if is_greeting else retrieve_context(company_id, question, business_unit_id=unit.pk)
     context = _compact_rag_context(chunks)
     catalog_lines = []
     if not is_greeting:
-        for item in CatalogItem.objects.filter(company_id=company_id, is_active=True).order_by("name")[:25]:
+        for item in CatalogItem.objects.filter(company_id=company_id, business_unit=unit, is_active=True).order_by("name")[:25]:
             if item.price_mode == CatalogItem.PriceMode.QUOTE:
                 price = "sob orçamento; nenhum preço confirmado"
             elif item.sale_price is None:
@@ -469,7 +500,7 @@ def answer_with_rag(
         )
     prompt = f"""INSTRUÇÕES DE ATENDIMENTO DEFINIDAS PELA EMPRESA:
 <instrucoes_empresa>
-{company.ai_instructions}
+{unit.ai_instructions or company.ai_instructions}
 </instrucoes_empresa>
 
 REGRAS OBRIGATÓRIAS DO SISTEMA:

@@ -16,12 +16,13 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .api import _company_for_request
+from .business_units import resolve_unit
 from .commercial import (
     ZERO, cancel_sale, correct_attribution, create_sale, fingerprint, money,
     record_payment, sale_financials,
 )
 from .models import (
-    CatalogCategory, CatalogItem, Contact, Conversation, MediaAsset, Message,
+    BusinessUnitEvent, CatalogCategory, CatalogItem, Contact, Conversation, MediaAsset, Message,
     PaymentMethod, Sale, SaleEvent, SaleExpense, SaleLine, SalePayment,
 )
 
@@ -40,12 +41,13 @@ class CatalogCategorySerializer(serializers.ModelSerializer):
 
 
 class CatalogItemSerializer(serializers.ModelSerializer):
+    business_unit_id = serializers.UUIDField(read_only=True)
     media_assets = serializers.PrimaryKeyRelatedField(queryset=MediaAsset.objects.all(), many=True, required=False)
 
     class Meta:
         model = CatalogItem
         fields = (
-            "id", "name", "kind", "category", "description", "price_mode", "sale_price",
+            "id", "business_unit_id", "name", "kind", "category", "description", "price_mode", "sale_price",
             "promotional_price", "unit_cost", "unit", "billing_unit", "sku", "availability",
             "duration_minutes", "variants", "internal_notes", "media_assets", "is_active",
             "created_at", "updated_at",
@@ -58,8 +60,14 @@ class CatalogItemSerializer(serializers.ModelSerializer):
         category = attrs.get("category", getattr(self.instance, "category", None))
         if category and category.company_id != company.pk:
             raise serializers.ValidationError({"category": "Categoria pertence a outra empresa."})
-        if any(asset.company_id != company.pk for asset in attrs.get("media_assets", [])):
+        assets = attrs.get("media_assets")
+        if assets is None and self.instance is not None:
+            assets = self.instance.media_assets.all()
+        if any(asset.company_id != company.pk for asset in (assets or [])):
             raise serializers.ValidationError({"media_assets": "Mídia pertence a outra empresa."})
+        unit = self.context.get("business_unit")
+        if unit and any(asset.business_unit_id != unit.pk for asset in (assets or [])):
+            raise serializers.ValidationError({"media_assets": "Mídia pertence a outra unidade."})
         mode = attrs.get("price_mode", getattr(self.instance, "price_mode", CatalogItem.PriceMode.QUOTE))
         price = attrs.get("sale_price", getattr(self.instance, "sale_price", None))
         if mode in {CatalogItem.PriceMode.FIXED, CatalogItem.PriceMode.FROM} and price is None:
@@ -116,6 +124,7 @@ class SaleInputSerializer(serializers.Serializer):
     contact_id = serializers.IntegerField(min_value=1)
     conversation_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     order_id = serializers.UUIDField(required=False, allow_null=True)
+    business_unit_id = serializers.UUIDField(required=False, allow_null=True)
     responsible_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     sold_at = serializers.DateTimeField()
     discount_amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=ZERO, required=False, default=ZERO)
@@ -151,6 +160,7 @@ class SaleEventSerializer(serializers.ModelSerializer):
 
 
 class SaleSerializer(serializers.ModelSerializer):
+    business_unit_id = serializers.UUIDField(read_only=True)
     lines = SaleLineSerializer(many=True, read_only=True)
     expenses = SaleExpenseSerializer(many=True, read_only=True)
     payments = SalePaymentSerializer(many=True, read_only=True)
@@ -160,7 +170,7 @@ class SaleSerializer(serializers.ModelSerializer):
     class Meta:
         model = Sale
         fields = (
-            "id", "contact", "conversation", "order", "responsible", "responsible_name",
+            "id", "business_unit_id", "contact", "conversation", "order", "responsible", "responsible_name",
             "confirmed_by", "sold_at", "confirmed_at", "subtotal", "discount_amount", "total",
             "estimated_tax_percent", "estimated_tax_amount", "expenses_complete", "status",
             "cancelled_at", "cancelled_by", "cancellation_reason", "attribution",
@@ -217,6 +227,9 @@ class CatalogItemListView(APIView):
     def get(self, request, company_id):
         company, membership = _company_for_request(request, company_id)
         items = CatalogItem.objects.filter(company=company).select_related("category").prefetch_related("media_assets")
+        if request.query_params.get("business_unit_id"):
+            unit = resolve_unit(company, request.query_params["business_unit_id"], active=False)
+            items = items.filter(business_unit=unit)
         if membership and membership.role == "agent":
             items = items.filter(is_active=True)
         if request.query_params.get("kind"):
@@ -236,9 +249,10 @@ class CatalogItemListView(APIView):
 
     def post(self, request, company_id):
         company, _ = _company_for_request(request, company_id, "admin")
-        serializer = CatalogItemSerializer(data=request.data, context={"company": company})
+        unit = resolve_unit(company, request.data.get("business_unit_id"))
+        serializer = CatalogItemSerializer(data=request.data, context={"company": company, "business_unit": unit})
         serializer.is_valid(raise_exception=True)
-        serializer.save(company=company)
+        serializer.save(company=company, business_unit=unit)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
@@ -261,9 +275,17 @@ class CatalogItemDetailView(APIView):
         obj = CatalogItem.objects.filter(company=company, pk=item_id).first()
         if obj is None:
             raise ValidationError({"item_id": "Item não encontrado."})
-        serializer = CatalogItemSerializer(obj, data=request.data, partial=True, context={"company": company})
+        unit = resolve_unit(company, request.data["business_unit_id"]) if "business_unit_id" in request.data else None
+        serializer = CatalogItemSerializer(obj, data=request.data, partial=True, context={"company": company, "business_unit": unit or obj.business_unit})
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        if unit:
+            serializer.save(business_unit=unit)
+            BusinessUnitEvent.objects.create(
+                company=company, business_unit=unit, actor=request.user,
+                kind="catalog_item_moved", details={"item_id": str(obj.pk)},
+            )
+        else:
+            serializer.save()
         return Response(serializer.data)
 
 
@@ -326,6 +348,9 @@ def _date_range(request):
 
 def _filter_sales(request, company, *, include_sale_dates=True):
     items = _sale_queryset(company)
+    if request.query_params.get("business_unit_id"):
+        unit = resolve_unit(company, request.query_params["business_unit_id"], active=False)
+        items = items.filter(business_unit=unit)
     status_filter = request.query_params.get("status")
     if status_filter:
         if status_filter not in Sale.Status.values:
@@ -521,10 +546,14 @@ class FinanceDashboardView(APIView):
             sold_at__gte=start - period_length, sold_at__lt=start,
         ).aggregate(value=Sum("total"))["value"] or ZERO
 
-        cohort = list(Conversation.objects.filter(
+        cohort_query = Conversation.objects.filter(
             company=company, first_eligible_inbound_at__gte=start,
             first_eligible_inbound_at__lt=end,
-        ).values_list("pk", "first_eligible_inbound_at", "opportunity_status"))
+        )
+        if request.query_params.get("business_unit_id"):
+            unit = resolve_unit(company, request.query_params["business_unit_id"], active=False)
+            cohort_query = cohort_query.filter(business_unit=unit)
+        cohort = list(cohort_query.values_list("pk", "first_eligible_inbound_at", "opportunity_status"))
         first_by_conversation = {pk: first_at for pk, first_at, _ in cohort}
         cohort_sales = Sale.objects.filter(
             company=company, status=Sale.Status.CONFIRMED,

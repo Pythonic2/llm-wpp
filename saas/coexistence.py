@@ -15,6 +15,7 @@ def _contact(number, phone="", user_id="", name=""):
     )
     conversation, _ = Conversation.objects.get_or_create(
         company=number.company, whatsapp_number=number, contact=contact,
+        defaults={"business_unit_id": number.business_unit_id},
     )
     return contact, conversation
 

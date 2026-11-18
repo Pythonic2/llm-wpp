@@ -22,14 +22,32 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from .billing import (
-    AsaasClient, BillingProviderError, EXTRA_COMPANY_PRICE, EXTRA_NUMBER_PRICE, FIRST_COMPANY_PRICE,
+    AsaasClient, BillingProviderError,
     accessible_companies, asaas_environment, checkout_link, company_billing_available, number_capacity,
     process_asaas_event, provision_checkout,
 )
 from .billing_email import confirm_email, queue_verification_email
-from .models import BillingCheckout, BillingCustomer, Company, Membership, WhatsAppNumber
+from .business_units import plan_for, unit_capacity
+from .models import BillingCheckout, BillingCustomer, Company, Membership, PlanVersion, WhatsAppNumber
 
 User = get_user_model()
+
+
+class PublicPricesView(APIView):
+    permission_classes = (AllowAny,)
+    authentication_classes = ()
+
+    def get(self, request):
+        plan = PlanVersion.objects.get(code="basic", version=2)
+        response = Response({
+            "first_company_price": str(plan.first_company_monthly_price),
+            "extra_company_price": str(plan.extra_company_monthly_price),
+            "extra_number_price": str(plan.additional_whatsapp_monthly_price),
+            "included_numbers": plan.included_whatsapp_numbers,
+            "included_business_units": plan.included_business_units,
+        })
+        response["Cache-Control"] = "no-store"
+        return response
 
 
 def _digits(value):
@@ -198,7 +216,7 @@ class PublicSignupView(APIView):
                             checkout = BillingCheckout.objects.create(
                                 user=existing_user, company=previous.company,
                                 kind=BillingCheckout.Kind.FIRST_COMPANY,
-                                amount=FIRST_COMPANY_PRICE, asaas_environment=asaas_environment(),
+                                amount=plan_for(previous.company).first_company_monthly_price, asaas_environment=asaas_environment(),
                             )
                             queue_verification_email(existing_user.billing_customer.pk)
                         return _provision_response(checkout)
@@ -215,7 +233,7 @@ class PublicSignupView(APIView):
                 profile = BillingCustomer.objects.create(user=user, asaas_environment=asaas_environment(), **profile_fields)
                 checkout = BillingCheckout.objects.create(
                     user=user, company=company, kind=BillingCheckout.Kind.FIRST_COMPANY,
-                    amount=FIRST_COMPANY_PRICE, asaas_environment=asaas_environment(),
+                    amount=plan_for(company).first_company_monthly_price, asaas_environment=asaas_environment(),
                 )
                 queue_verification_email(profile.pk)
         except IntegrityError as exc:
@@ -393,7 +411,7 @@ class ExtraCompanyCheckoutView(APIView):
                 Membership.objects.create(user=request.user, company=company, role=Membership.Role.OWNER)
                 checkout = BillingCheckout.objects.create(
                     user=request.user, company=company, kind=BillingCheckout.Kind.EXTRA_COMPANY,
-                    amount=EXTRA_COMPANY_PRICE, request_key=request_key, request_hash=request_hash,
+                    amount=plan_for(company).extra_company_monthly_price, request_key=request_key, request_hash=request_hash,
                     asaas_environment=asaas_environment(),
                 )
         except IntegrityError:
@@ -443,7 +461,7 @@ class ExtraNumberCheckoutView(APIView):
                 _profile_for_user(request.user, serializer.validated_data.get("billing_profile"))
                 checkout = BillingCheckout.objects.create(
                     user=request.user, company=company, kind=BillingCheckout.Kind.EXTRA_NUMBER,
-                    amount=EXTRA_NUMBER_PRICE, request_key=request_key, request_hash=request_hash,
+                    amount=plan_for(company).additional_whatsapp_monthly_price, request_key=request_key, request_hash=request_hash,
                     asaas_environment=asaas_environment(),
                 )
         except IntegrityError:
@@ -462,15 +480,20 @@ class BillingQuotaView(APIView):
         if membership is None and not request.user.is_superuser:
             raise PermissionDenied("Empresa não encontrada.")
         company = membership.company if membership else Company.objects.get(pk=company_id)
+        plan = plan_for(company)
         capacity = number_capacity(company)
         used = WhatsAppNumber.objects.filter(company=company, is_active=True).count()
         return Response({
-            "company_status": company.billing_status, "included_numbers": 2,
+            "company_status": company.billing_status, "included_numbers": plan.included_whatsapp_numbers,
+            "included_business_units": unit_capacity(company),
+            "used_business_units": company.business_units.count(),
+            "business_units_over_limit": company.business_units.count() > unit_capacity(company),
             "access_active": company_billing_available(company),
-            "paid_extra_numbers": max(0, capacity - 2) if capacity is not None else 0,
+            "paid_extra_numbers": max(0, capacity - plan.included_whatsapp_numbers) if capacity is not None else 0,
             "number_capacity": capacity, "active_numbers": used,
-            "first_company_price": str(FIRST_COMPANY_PRICE), "extra_company_price": str(EXTRA_COMPANY_PRICE),
-            "extra_number_price": str(EXTRA_NUMBER_PRICE),
+            "numbers_over_limit": capacity is not None and used > capacity,
+            "first_company_price": str(plan.first_company_monthly_price), "extra_company_price": str(plan.extra_company_monthly_price),
+            "extra_number_price": str(plan.additional_whatsapp_monthly_price),
             "can_purchase": bool(request.user.is_superuser or membership and membership.role == Membership.Role.OWNER),
         })
 

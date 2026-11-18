@@ -45,6 +45,7 @@ from .api_serializers import (
 )
 from .models import (
     Company,
+    BusinessUnitEvent,
     Contact,
     Conversation,
     FollowUpAttempt,
@@ -68,6 +69,7 @@ from .meta import (
     verify_embedded_signup_assets,
 )
 from .billing import accessible_companies, assert_number_capacity, company_billing_available
+from .business_units import resolve_unit
 from .team_invites import queue_team_invite
 
 User = get_user_model()
@@ -348,8 +350,15 @@ class DashboardView(APIView):
         company, _ = _company_for_request(request, company_id)
         conversations = Conversation.objects.filter(company=company)
         messages = Message.objects.filter(company=company)
+        unit_id = request.query_params.get("business_unit_id")
+        if unit_id:
+            unit = resolve_unit(company, unit_id, active=False)
+            conversations = conversations.filter(business_unit=unit)
+            messages = messages.filter(conversation__business_unit=unit)
         recent = conversations.select_related("contact", "assigned_to").order_by("-last_message_at", "-created_at")[:8]
         docs = KnowledgeDocument.objects.filter(company=company)
+        if unit_id:
+            docs = docs.filter(knowledge_base__business_unit=unit)
         follow_ups = conversations.filter(
             opportunity_status=Conversation.OpportunityStatus.OPEN,
             lead_temperature__in=(Conversation.LeadTemperature.HOT, Conversation.LeadTemperature.WARM),
@@ -359,6 +368,8 @@ class DashboardView(APIView):
         today = timezone.now().astimezone(local_zone).date()
         today_start = timezone.make_aware(datetime.combine(today, time.min), local_zone)
         attempts_today = FollowUpAttempt.objects.filter(company=company, created_at__gte=today_start)
+        if unit_id:
+            attempts_today = attempts_today.filter(conversation__business_unit=unit)
         sent_today = attempts_today.filter(status=FollowUpAttempt.Status.SENT)
         recent_attempts = attempts_today.select_related("conversation__contact", "outbound_message").order_by("-created_at", "-pk")[:20]
         return Response(
@@ -425,6 +436,9 @@ class CompanyModelListCreateView(APIView):
 
     def get_queryset(self, request, company):
         queryset = self.model.objects.filter(company=company).order_by("pk")
+        if request.query_params.get("business_unit_id") and any(field.name == "business_unit" for field in self.model._meta.fields):
+            unit = resolve_unit(company, request.query_params["business_unit_id"], active=False)
+            queryset = queryset.filter(business_unit=unit)
         for field in self.filter_fields:
             value = request.query_params.get(field)
             if value not in (None, ""):
@@ -502,7 +516,11 @@ class WhatsAppNumberListView(CompanyModelListCreateView):
             company = Company.objects.select_for_update().get(pk=company_id)
             if request.data.get("is_active", True):
                 assert_number_capacity(company)
-            return super().post(request, company_id)
+            unit = resolve_unit(company, request.data.get("business_unit_id"))
+            serializer = self.serializer_class(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            serializer.save(company=company, business_unit=unit)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
 class WhatsAppNumberDetailView(CompanyModelDetailView):
@@ -556,6 +574,7 @@ class EmbeddedSignupCompleteView(APIView):
 
     def post(self, request, company_id):
         company, _ = _company_for_request(request, company_id, "admin")
+        unit = resolve_unit(company, request.data.get("business_unit_id"))
         code = str(request.data.get("code", "")).strip()
         waba_id = str(request.data.get("waba_id", "")).strip()
         phone_number_id = str(request.data.get("phone_number_id", "")).strip()
@@ -628,6 +647,7 @@ class EmbeddedSignupCompleteView(APIView):
                 number.connection_error = ""
                 number.connection_state = "syncing" if coexistence else "connected"
                 number.is_active = True
+                number.business_unit = unit
                 if coexistence:
                     number.ai_enabled = False
                 number.save()
@@ -677,6 +697,9 @@ class OrderListView(APIView):
         queryset = Order.objects.filter(company=company).select_related(
             "conversation__contact", "approved_by"
         ).order_by("-created_at")
+        if request.query_params.get("business_unit_id"):
+            unit = resolve_unit(company, request.query_params["business_unit_id"], active=False)
+            queryset = queryset.filter(business_unit=unit)
         order_status = request.query_params.get("status")
         if order_status:
             queryset = queryset.filter(status=order_status)
@@ -790,7 +813,7 @@ class ConversationListView(CompanyModelListCreateView):
     model = Conversation
     serializer_class = ConversationSerializer
     filter_fields = (
-        "status", "assigned_to_id", "whatsapp_number_id", "ai_paused", "lead_temperature",
+        "status", "assigned_to_id", "whatsapp_number_id", "business_unit_id", "ai_paused", "lead_temperature",
         "opportunity_status",
     )
     search_fields = ("contact__name", "contact__phone", "contact__wa_id")
@@ -1047,11 +1070,34 @@ class KnowledgeBaseListView(CompanyModelListCreateView):
     serializer_class = KnowledgeBaseSerializer
     minimum_role = "admin"
 
+    def post(self, request, company_id):
+        company, _ = _company_for_request(request, company_id, "admin")
+        unit = resolve_unit(company, request.data.get("business_unit_id"))
+        serializer = self.serializer_class(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(company=company, business_unit=unit)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
 
 class KnowledgeBaseDetailView(CompanyModelDetailView):
     model = KnowledgeBase
     serializer_class = KnowledgeBaseSerializer
     minimum_role = "admin"
+
+    def patch(self, request, company_id, object_id):
+        company, base = self.get_object(request, company_id, object_id)
+        unit = resolve_unit(company, request.data["business_unit_id"]) if "business_unit_id" in request.data else None
+        serializer = self.serializer_class(base, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        if unit:
+            serializer.save(business_unit=unit)
+            BusinessUnitEvent.objects.create(
+                company=company, business_unit=unit, actor=request.user,
+                kind="knowledge_base_moved", details={"base_id": base.pk},
+            )
+        else:
+            serializer.save()
+        return Response(serializer.data)
 
 
 class KnowledgeDocumentListView(APIView):
@@ -1197,6 +1243,9 @@ class MediaAssetListView(APIView):
     def get(self, request, company_id):
         company, _ = _company_for_request(request, company_id)
         queryset = MediaAsset.objects.filter(company=company).select_related("category")
+        if request.query_params.get("business_unit_id"):
+            unit = resolve_unit(company, request.query_params["business_unit_id"], active=False)
+            queryset = queryset.filter(business_unit=unit)
         query = request.query_params.get("q", "").strip()
         if query:
             queryset = queryset.filter(
@@ -1215,6 +1264,7 @@ class MediaAssetListView(APIView):
 
     def post(self, request, company_id):
         company, _ = _company_for_request(request, company_id, "admin")
+        unit = resolve_unit(company, request.data.get("business_unit_id"))
         uploads = request.FILES.getlist("files")
         if uploads:
             try:
@@ -1240,7 +1290,7 @@ class MediaAssetListView(APIView):
                 serializers.append(serializer)
 
             with transaction.atomic():
-                assets = [serializer.save() for serializer in serializers]
+                assets = [serializer.save(business_unit=unit) for serializer in serializers]
                 for asset in assets:
                     transaction.on_commit(
                         lambda asset_id=asset.pk: process_media_asset.delay(asset_id)
@@ -1256,7 +1306,7 @@ class MediaAssetListView(APIView):
             data=request.data, context={"request": request, "company": company}
         )
         serializer.is_valid(raise_exception=True)
-        asset = serializer.save()
+        asset = serializer.save(business_unit=unit)
         transaction.on_commit(lambda: process_media_asset.delay(asset.pk))
         return Response(
             MediaAssetSerializer(asset, context={"request": request, "company": company}).data,
@@ -1277,11 +1327,17 @@ class MediaAssetDetailView(APIView):
 
     def patch(self, request, company_id, asset_id):
         company, asset = self.get_object(request, company_id, asset_id, "admin")
+        unit = resolve_unit(company, request.data["business_unit_id"]) if "business_unit_id" in request.data else None
         serializer = MediaAssetSerializer(
             asset, data=request.data, partial=True, context={"request": request, "company": company}
         )
         serializer.is_valid(raise_exception=True)
-        asset = serializer.save(status=MediaAsset.Status.PENDING, error="")
+        asset = serializer.save(status=MediaAsset.Status.PENDING, error="", **({"business_unit": unit} if unit else {}))
+        if unit:
+            BusinessUnitEvent.objects.create(
+                company=company, business_unit=unit, actor=request.user,
+                kind="media_moved", details={"asset_id": str(asset.pk)},
+            )
         transaction.on_commit(lambda: process_media_asset.delay(asset.pk))
         return Response(serializer.data)
 

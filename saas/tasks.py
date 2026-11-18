@@ -263,6 +263,7 @@ def analyze_conversation(conversation_id):
                     conversation=conversation,
                     source_message=source,
                     defaults={
+                        "business_unit_id": conversation.business_unit_id,
                         "items": order_data.get("items", []),
                         "total": total,
                         "requested_for": order_data.get("requested_for", ""),
@@ -646,7 +647,8 @@ def answer_inbound_message(self, message_id):
                 )
                 try:
                     selected_media = select_media_for_question(
-                        incoming.company_id, incoming.text, media_context
+                        incoming.company_id, incoming.text, media_context,
+                        business_unit_id=conversation.business_unit_id,
                     )
                 except Exception:
                     logger.exception(

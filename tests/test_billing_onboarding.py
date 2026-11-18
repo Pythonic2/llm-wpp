@@ -15,7 +15,7 @@ from saas.billing import AsaasClient, BillingProviderError, number_billing_avail
 from saas.billing_email import SALT, send_verification_email
 from saas.services import send_whatsapp_text
 
-from saas.models import BillingCheckout, BillingCustomer, BillingEvent, Company, Membership, WhatsAppNumber
+from saas.models import BillingCheckout, BillingCustomer, BillingEvent, Company, Membership, PlanPriceRevision, PlanVersion, WhatsAppNumber
 
 
 @pytest.fixture
@@ -352,7 +352,7 @@ def test_number_limit_requires_paid_slot_and_is_company_scoped(client, asaas_moc
     addon = post_json(client, reverse("api-billing-extra-number", args=[company.pk]), {}, HTTP_IDEMPOTENCY_KEY="extra-number-1")
     assert addon.status_code == 201, addon.content
     slot = BillingCheckout.objects.get(pk=addon.json()["id"])
-    assert slot.amount == Decimal("49.90")
+    assert slot.amount == Decimal("30.00")
     assert post_json(client, url, {"phone_number_id": "meta-3", "display_phone_number": "+5511999900003"}).status_code == 400
     webhook(client, paid_event(slot, "evt_number_paid"))
     assert post_json(client, url, {"phone_number_id": "meta-3", "display_phone_number": "+5511999900003"}).status_code == 201
@@ -368,6 +368,94 @@ def test_number_limit_requires_paid_slot_and_is_company_scoped(client, asaas_moc
     with pytest.raises(ValueError, match="vaga"):
         send_whatsapp_text(third, "5511999999999", "teste")
     assert client.get(reverse("api-billing-quota", args=[company.pk])).json()["number_capacity"] == 2
+
+
+@pytest.mark.django_db
+def test_existing_plan_keeps_previous_additional_number_price(client, tenant_data):
+    company = tenant_data["company"]
+    company.plan, _ = PlanVersion.objects.get_or_create(
+        code="basic", version=1,
+        defaults={"name": "Básico anterior", "included_business_units": 2,
+                  "included_whatsapp_numbers": 2,
+                  "additional_whatsapp_monthly_price": Decimal("49.90")},
+    )
+    company.save(update_fields=["plan"])
+    client.force_login(tenant_data["user"])
+    quota = client.get(reverse("api-billing-quota", args=[company.pk])).json()
+    assert quota["extra_number_price"] == "49.90"
+    assert quota["included_numbers"] == 2
+
+
+@pytest.mark.django_db
+def test_admin_price_change_only_affects_new_checkouts(client, asaas_mock):
+    owner, company = legacy_owner()
+    legacy_profile(owner)
+    old = BillingCheckout.objects.create(
+        user=owner, company=company, kind=BillingCheckout.Kind.EXTRA_NUMBER,
+        status=BillingCheckout.Status.PAID, amount=Decimal("30.00"),
+        asaas_subscription_id="sub_existing_price", asaas_environment="sandbox",
+    )
+    plan = company.plan
+    admin = get_user_model().objects.create_superuser("price-admin", password="test")
+    client.force_login(admin)
+    response = client.post(reverse("admin:saas_planversion_change", args=[plan.pk]), {
+        "name": plan.name,
+        "included_business_units": 2,
+        "included_whatsapp_numbers": 2,
+        "first_company_monthly_price": "259.90",
+        "extra_company_monthly_price": "209.90",
+        "additional_whatsapp_monthly_price": "37.00",
+        "reason": "Nova tabela comercial para futuras contratações.",
+    })
+    assert response.status_code == 302, response.content
+    revision = PlanPriceRevision.objects.get(plan=plan)
+    assert revision.actor == admin
+    assert revision.previous_prices["additional_whatsapp_monthly_price"] == "30.00"
+    old.refresh_from_db()
+    assert old.amount == Decimal("30.00")
+    assert not any(path.startswith("/subscriptions/") for _, path, _, _ in asaas_mock)
+
+    prices = client.get(reverse("api-public-prices")).json()
+    assert prices["first_company_price"] == "259.90"
+    assert prices["extra_company_price"] == "209.90"
+    assert prices["extra_number_price"] == "37.00"
+
+    client.force_login(owner)
+    checkout = post_json(
+        client, reverse("api-billing-extra-number", args=[company.pk]),
+        {"billing_email": "owner@example.com"}, HTTP_IDEMPOTENCY_KEY="new-number-price",
+    )
+    assert checkout.status_code == 201, checkout.content
+    assert BillingCheckout.objects.get(pk=checkout.json()["id"]).amount == Decimal("37.00")
+    old.refresh_from_db()
+    assert old.amount == Decimal("30.00")
+
+
+@pytest.mark.django_db
+def test_new_company_checkouts_use_current_plan_prices(client, asaas_mock):
+    seed = Company.objects.create(name="Seed", slug="price-seed")
+    plan = seed.plan
+    plan.first_company_monthly_price = Decimal("259.90")
+    plan.extra_company_monthly_price = Decimal("209.90")
+    plan.save(update_fields=["first_company_monthly_price", "extra_company_monthly_price"])
+    first = post_json(client, reverse("api-public-signup"), signup_payload())
+    assert first.status_code == 201, first.content
+    assert BillingCheckout.objects.get(pk=first.json()["id"]).amount == Decimal("259.90")
+
+
+@pytest.mark.django_db
+def test_extra_company_checkout_uses_current_plan_price(client, asaas_mock):
+    owner, company = legacy_owner()
+    owner.email = "owner@example.com"
+    owner.save(update_fields=["email"])
+    legacy_profile(owner)
+    plan = company.plan
+    plan.extra_company_monthly_price = Decimal("209.90")
+    plan.save(update_fields=["extra_company_monthly_price"])
+    client.force_login(owner)
+    result = post_json(client, reverse("api-billing-extra-company"), {"company_name": "Nova empresa"}, HTTP_IDEMPOTENCY_KEY="new-company-price")
+    assert result.status_code == 201, result.content
+    assert BillingCheckout.objects.get(pk=result.json()["id"]).amount == Decimal("209.90")
 
 
 @pytest.mark.django_db

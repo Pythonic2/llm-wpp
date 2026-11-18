@@ -14,9 +14,6 @@ from rest_framework.exceptions import ValidationError
 
 from .models import BillingCheckout, BillingCustomer, BillingEvent, Company, WhatsAppNumber
 
-FIRST_COMPANY_PRICE = Decimal("249.90")
-EXTRA_COMPANY_PRICE = Decimal("199.90")
-EXTRA_NUMBER_PRICE = Decimal("49.90")
 PAYMENT_GRACE = timedelta(days=7)
 
 
@@ -171,11 +168,19 @@ def provision_checkout(checkout):
 def number_capacity(company):
     if company.billing_status == Company.BillingStatus.LEGACY:
         return None  # Preserve existing tenants until they opt into self-service billing.
+    from .business_units import plan_for
+
+    included = plan_for(company).included_whatsapp_numbers
     paid_slots = BillingCheckout.objects.filter(
         company=company, kind=BillingCheckout.Kind.EXTRA_NUMBER, status=BillingCheckout.Status.PAID,
         asaas_environment=asaas_environment(),
     ).filter(Q(overdue_since__isnull=True) | Q(overdue_since__gte=timezone.now() - PAYMENT_GRACE)).count()
-    return 2 + paid_slots
+    return included + paid_slots
+
+
+def trial_available(company, *, now=None):
+    now = now or timezone.now()
+    return company.trial_expires_at is not None and company.trial_expires_at > now
 
 
 def number_billing_available(number):
@@ -193,7 +198,11 @@ def number_billing_available(number):
 
 
 def company_billing_available(company):
+    if company.archived_at is not None:
+        return False
     if company.billing_status == Company.BillingStatus.LEGACY:
+        return True
+    if trial_available(company):
         return True
     if company.billing_status != Company.BillingStatus.ACTIVE:
         return False
@@ -206,12 +215,15 @@ def company_billing_available(company):
 
 
 def accessible_companies():
+    now = timezone.now()
     entitled_ids = BillingCheckout.objects.filter(
         kind__in=[BillingCheckout.Kind.FIRST_COMPANY, BillingCheckout.Kind.EXTRA_COMPANY],
         status=BillingCheckout.Status.PAID,
         asaas_environment=asaas_environment(),
     ).filter(Q(overdue_since__isnull=True) | Q(overdue_since__gte=timezone.now() - PAYMENT_GRACE)).values("company_id")
-    return Company.objects.filter(Q(billing_status=Company.BillingStatus.LEGACY) | Q(
+    return Company.objects.filter(archived_at__isnull=True).filter(Q(billing_status=Company.BillingStatus.LEGACY) | Q(
+        trial_expires_at__gt=now,
+    ) | Q(
         billing_status=Company.BillingStatus.ACTIVE, pk__in=entitled_ids,
     ))
 
@@ -226,7 +238,7 @@ def assert_number_capacity(company, *, existing_number=None):
         return
     used = WhatsAppNumber.objects.filter(company=company, is_active=True).count()
     if used >= capacity:
-        raise ValidationError({"detail": "Os 2 números incluídos já estão em uso. Contrate uma vaga adicional por R$ 49,90/mês."})
+        raise ValidationError({"detail": "O limite de números desta empresa foi atingido. Contrate uma vaga adicional."})
 
 
 def reconcile_checkout(checkout_id):
